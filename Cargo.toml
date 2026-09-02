@@ -2,10 +2,9 @@
 name = "tuicr"
 version = "0.25.0+mod"
 edition = "2024"
-description = "Review AI-generated diffs like a GitHub pull request, right from your terminal."
 license = "MIT"
-repository = "https://github.com/agavra/tuicr"
-homepage = "https://github.com/agavra/tuicr"
+repository = "https://github.com/jameshiew/tuicr-mod"
+homepage = "https://github.com/jameshiew/tuicr-mod"
 readme = "README.md"
 keywords = ["tui", "git", "code-review", "diff", "cli"]
 categories = ["command-line-utilities", "development-tools"]
