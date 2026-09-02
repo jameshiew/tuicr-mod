@@ -165,7 +165,9 @@ impl App {
     /// selector). `PullRequests` switches the tab; the actual fetch is
     /// triggered lazily through `on_target_tab_entered`.
     pub fn enter_target_selector(&mut self, initial_tab: TargetTab) -> Result<()> {
-        let reviewed_commit_id = match &self.diff_source {
+        let reviewed_target_id = match &self.diff_source {
+            DiffSource::Staged => Some(STAGED_SELECTION_ID.to_string()),
+            DiffSource::Unstaged => Some(UNSTAGED_SELECTION_ID.to_string()),
             DiffSource::CommitRange(_) | DiffSource::StagedUnstagedAndCommits(_) => self
                 .review_commits
                 .get(self.commit_list_cursor)
@@ -207,7 +209,7 @@ impl App {
         if has_unstaged_changes {
             self.commit_list.insert(0, Self::unstaged_commit_entry());
         }
-        self.commit_list_cursor = reviewed_commit_id
+        self.commit_list_cursor = reviewed_target_id
             .and_then(|id| self.commit_list.iter().position(|commit| commit.id == id))
             .unwrap_or(0);
         self.commit_list_scroll_offset = 0;

@@ -72,12 +72,14 @@ pub fn list_changed_paths(repo: &Repository, kind: ChangeKind) -> Result<Vec<Pat
     let diff = match kind {
         ChangeKind::Staged => {
             let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-            let index = repo.index()?;
+            let mut index = repo.index()?;
+            index.read(true)?;
             let mut opts = diff_options(DiffWhitespaceMode::Normal);
             repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?
         }
         ChangeKind::Unstaged => {
-            let index = repo.index()?;
+            let mut index = repo.index()?;
+            index.read(true)?;
             let mut opts = diff_options(DiffWhitespaceMode::Normal);
             opts.include_untracked(true);
             // `show_untracked_content(false)` keeps libgit2 from reading each

@@ -27,6 +27,7 @@ impl Drop for TestReviewsDir {
 struct DummyVcs {
     info: VcsInfo,
     commits: Vec<CommitInfo>,
+    change_status: VcsChangeStatus,
 }
 
 impl VcsBackend for DummyVcs {
@@ -50,10 +51,7 @@ impl VcsBackend for DummyVcs {
     }
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
-        Ok(VcsChangeStatus {
-            staged: false,
-            unstaged: false,
-        })
+        Ok(self.change_status)
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
@@ -249,6 +247,20 @@ fn build_app_rooted(
     commits: Vec<CommitInfo>,
     comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
 ) -> App {
+    build_app_rooted_with_status(
+        root_path,
+        commits,
+        comment_type_configs,
+        VcsChangeStatus::default(),
+    )
+}
+
+fn build_app_rooted_with_status(
+    root_path: PathBuf,
+    commits: Vec<CommitInfo>,
+    comment_type_configs: Option<Vec<crate::config::CommentTypeConfig>>,
+    change_status: VcsChangeStatus,
+) -> App {
     let vcs_info = VcsInfo {
         root_path,
         head_commit: "head".to_string(),
@@ -266,6 +278,7 @@ fn build_app_rooted(
         Box::new(DummyVcs {
             info: vcs_info.clone(),
             commits,
+            change_status,
         }),
         vcs_info,
         Theme::dark(),
@@ -2272,6 +2285,52 @@ fn should_highlight_reviewed_commit_on_escape_to_local_selector() {
 
     assert_eq!(app.input_mode, InputMode::CommitSelect);
     assert_eq!(app.commit_list[app.commit_list_cursor].id, "bbb");
+}
+
+#[test]
+fn should_highlight_staged_changes_when_returning_to_local_selector() {
+    let mut app = build_app_rooted_with_status(
+        PathBuf::from("/tmp"),
+        vec![dummy_commit("abc")],
+        None,
+        VcsChangeStatus {
+            staged: true,
+            unstaged: true,
+        },
+    );
+    app.diff_source = DiffSource::Staged;
+
+    app.enter_target_selector(TargetTab::Local).unwrap();
+
+    assert_eq!(
+        app.commit_list[app.commit_list_cursor].id,
+        STAGED_SELECTION_ID
+    );
+}
+
+#[test]
+fn should_drop_stale_staged_changes_and_highlight_first_local_target() {
+    let mut app = build_app_rooted_with_status(
+        PathBuf::from("/tmp"),
+        vec![dummy_commit("abc")],
+        None,
+        VcsChangeStatus {
+            staged: false,
+            unstaged: true,
+        },
+    );
+    app.diff_source = DiffSource::Staged;
+    app.commit_list = vec![
+        App::staged_commit_entry(),
+        App::unstaged_commit_entry(),
+        dummy_commit("old"),
+    ];
+
+    app.enter_target_selector(TargetTab::Local).unwrap();
+
+    assert!(!app.commit_list.iter().any(App::is_staged_commit));
+    assert_eq!(app.commit_list_cursor, 0);
+    assert_eq!(app.commit_list[0].id, UNSTAGED_SELECTION_ID);
 }
 
 #[test]

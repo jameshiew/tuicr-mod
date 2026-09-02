@@ -295,4 +295,37 @@ mod tests {
             "worktree must report a workdir"
         );
     }
+
+    #[test]
+    fn should_refresh_index_after_external_update() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        git(temp.path(), &["init", "-q", "-b", "main"]);
+        git(temp.path(), &["config", "user.email", "test@example.com"]);
+        git(temp.path(), &["config", "user.name", "Test User"]);
+        fs::write(temp.path().join("file.txt"), "base\n").unwrap();
+        git(temp.path(), &["add", "file.txt"]);
+        git(temp.path(), &["commit", "-q", "-m", "base"]);
+
+        let backend = Libgit2Backend::discover_from(temp.path(), DiffWhitespaceMode::Normal)
+            .expect("failed to open backend");
+        fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+        git(temp.path(), &["add", "file.txt"]);
+        assert_eq!(
+            backend.list_changed_paths(ChangeKind::Staged).unwrap(),
+            vec![PathBuf::from("file.txt")]
+        );
+
+        git(temp.path(), &["reset", "-q", "HEAD", "file.txt"]);
+
+        assert!(
+            backend
+                .list_changed_paths(ChangeKind::Staged)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            backend.list_changed_paths(ChangeKind::Unstaged).unwrap(),
+            vec![PathBuf::from("file.txt")]
+        );
+    }
 }
