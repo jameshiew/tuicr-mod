@@ -434,6 +434,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
         self.input_mode = InputMode::Normal;
+        self.focus_initial_review_panel();
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
@@ -474,6 +475,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::WorkingTree;
         self.input_mode = InputMode::Normal;
+        self.focus_initial_review_panel();
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
@@ -509,6 +511,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Staged;
         self.input_mode = InputMode::Normal;
+        self.focus_initial_review_panel();
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
@@ -544,6 +547,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
         self.input_mode = InputMode::Normal;
+        self.focus_initial_review_panel();
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
         self.clear_expanded_gaps();
@@ -942,6 +946,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
         self.input_mode = InputMode::Normal;
+        self.focus_initial_review_panel();
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
 

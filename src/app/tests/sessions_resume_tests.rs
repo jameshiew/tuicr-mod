@@ -225,6 +225,7 @@ fn should_pass_stored_commit_order_through_unchanged_when_resuming() {
         &mut app,
         range_session(&["aaa", "bbb", "ccc"], Some("main")),
     );
+    app.focused_panel = FocusedPanel::Diff;
 
     // resumed through the production entry point
     app.sessions_tab_select().expect("resume should succeed");
@@ -240,6 +241,7 @@ fn should_pass_stored_commit_order_through_unchanged_when_resuming() {
         ]),
         "resume must not reverse the stored range"
     );
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
 }
 
 #[test]

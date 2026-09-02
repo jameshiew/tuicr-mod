@@ -993,6 +993,7 @@ impl App {
         self.diff_files = diff_files;
         self.diff_source = DiffSource::CommitRange(selected_ids);
         self.input_mode = InputMode::Normal;
+        self.focus_initial_review_panel();
 
         // Reset navigation state
         self.diff_state = DiffState::default();

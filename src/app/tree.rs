@@ -1,6 +1,14 @@
 use super::*;
 
 impl App {
+    pub(in crate::app) fn focus_initial_review_panel(&mut self) {
+        self.focused_panel = if self.show_file_list {
+            FocusedPanel::FileList
+        } else {
+            FocusedPanel::Diff
+        };
+    }
+
     pub fn file_list_down(&mut self, n: usize) {
         let visible_items = self.build_visible_items();
         let max_idx = visible_items.len().saturating_sub(1);

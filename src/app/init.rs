@@ -58,8 +58,8 @@ impl App {
             // directory mode the user needs the list to navigate.
             if app.diff_files.len() == 1 {
                 app.show_file_list = false;
+                app.focus_initial_review_panel();
             }
-            app.focused_panel = FocusedPanel::Diff;
 
             return Ok(app);
         }
@@ -114,7 +114,6 @@ impl App {
             )?;
 
             app.is_pristine_mode = true;
-            app.focused_panel = FocusedPanel::Diff;
             // Force unified view: pristine mode has no diff, so side-by-side
             // would render two identical panes. The `:diff` command is gated
             // separately so the user cannot toggle back.
@@ -484,7 +483,7 @@ impl App {
             pending_editor_target: None,
             editor_launches: Vec::new(),
             input_mode,
-            focused_panel: FocusedPanel::Diff,
+            focused_panel: FocusedPanel::FileList,
             diff_view_mode: DiffViewMode::Unified,
             relative_line_numbers: false,
             cursor_side: LineSide::New,

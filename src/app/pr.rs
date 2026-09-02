@@ -49,7 +49,7 @@ impl App {
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
         self.input_mode = InputMode::Normal;
-        self.focused_panel = FocusedPanel::Diff;
+        self.focus_initial_review_panel();
         self.clear_expanded_gaps();
         self.commit_list.clear();
         self.commit_selection_range = None;

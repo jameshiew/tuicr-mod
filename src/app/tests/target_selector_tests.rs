@@ -562,6 +562,7 @@ fn should_enter_pr_mode_when_opening_pr_via_fake_backend() {
         test_pr_details(42, "answer"),
         crate::forge::github::gh::tests_fixture::SIMPLE_PATCH.to_string(),
     ));
+    app.focused_panel = FocusedPanel::Diff;
     // when
     app.open_pr_with_backend(&summary, backend, None).unwrap();
     // then
@@ -578,6 +579,7 @@ fn should_enter_pr_mode_when_opening_pr_via_fake_backend() {
     assert!(app.session.pr_session_key.is_some());
     // and PR diff files were parsed
     assert_eq!(app.diff_files.len(), 1);
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
     // and the forge backend is wired for context expansion / submit
     assert!(app.forge_backend.is_some());
 }
@@ -724,7 +726,7 @@ fn should_preserve_persisted_commit_range_over_since_last_review_default() {
     assert_eq!(app.commit_selection_range, Some((1, 1)));
     assert_eq!(app.pr_last_reviewed_commit_index, Some(1));
     assert!(message.is_none());
-    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
 }
 
 #[test]
