@@ -11,14 +11,40 @@ impl App {
 
     pub fn file_list_down(&mut self, n: usize) {
         let visible_items = self.build_visible_items();
-        let max_idx = visible_items.len().saturating_sub(1);
-        let new_idx = (self.file_list_state.selected() + n).min(max_idx);
+        if visible_items.is_empty() {
+            self.file_list_state.select(0);
+            return;
+        }
+
+        let selected = self.file_list_state.selected().min(visible_items.len() - 1);
+        let new_idx = visible_items
+            .iter()
+            .enumerate()
+            .skip(selected + 1)
+            .filter_map(|(idx, item)| matches!(item, FileTreeItem::File { .. }).then_some(idx))
+            .take(n)
+            .last()
+            .unwrap_or(selected);
         self.file_list_state.select(new_idx);
         self.follow_file_list_in_single_file_view();
     }
 
     pub fn file_list_up(&mut self, n: usize) {
-        let new_idx = self.file_list_state.selected().saturating_sub(n);
+        let visible_items = self.build_visible_items();
+        if visible_items.is_empty() {
+            self.file_list_state.select(0);
+            return;
+        }
+
+        let selected = self.file_list_state.selected().min(visible_items.len() - 1);
+        let new_idx = visible_items[..selected]
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(idx, item)| matches!(item, FileTreeItem::File { .. }).then_some(idx))
+            .take(n)
+            .last()
+            .unwrap_or(selected);
         self.file_list_state.select(new_idx);
         self.follow_file_list_in_single_file_view();
     }

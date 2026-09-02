@@ -294,3 +294,53 @@ fn test_interleaved_paths_stay_under_own_directory() {
         ]
     );
 }
+
+fn selected_file_path(app: &App) -> &Path {
+    let Some(FileTreeItem::File { file_idx, .. }) = app.get_selected_tree_item() else {
+        panic!("expected a selected file");
+    };
+    app.diff_files[file_idx].display_path()
+}
+
+#[test]
+fn should_skip_directory_rows_when_moving_down_in_file_list() {
+    let mut app = app_with(&["main.rs", "app/init.rs", "app/mod.rs", "tests/smoke.rs"]);
+
+    app.file_list_state.select(0);
+    app.file_list_down(1);
+
+    assert_eq!(selected_file_path(&app), Path::new("app/init.rs"));
+    assert_eq!(
+        app.current_file_path().map(PathBuf::as_path),
+        Some(Path::new("app/init.rs"))
+    );
+
+    app.file_list_down(2);
+
+    assert_eq!(selected_file_path(&app), Path::new("tests/smoke.rs"));
+}
+
+#[test]
+fn should_skip_directory_rows_when_moving_up_in_file_list() {
+    let mut app = app_with(&["main.rs", "app/init.rs", "app/mod.rs", "tests/smoke.rs"]);
+    let tests_file_row = app
+        .build_visible_items()
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                FileTreeItem::File { file_idx, .. }
+                    if app.diff_files[*file_idx].display_path() == Path::new("tests/smoke.rs")
+            )
+        })
+        .expect("tests file row");
+
+    app.file_list_state.select(tests_file_row);
+    app.file_list_up(1);
+
+    assert_eq!(selected_file_path(&app), Path::new("app/mod.rs"));
+
+    app.file_list_up(2);
+
+    assert_eq!(selected_file_path(&app), Path::new("main.rs"));
+}
