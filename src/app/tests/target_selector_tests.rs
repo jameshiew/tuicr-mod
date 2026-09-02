@@ -2201,6 +2201,52 @@ fn should_treat_commits_as_alias_for_local_target_selector() {
 }
 
 #[test]
+fn should_treat_right_as_enter_on_local_commit_expand_row() {
+    let commits = vec![dummy_commit("bbb"), dummy_commit("aaa")];
+    let mut app = build_app_with_commits(commits);
+    app.enter_target_selector(TargetTab::Local).unwrap();
+    app.visible_commit_count = 1;
+    app.commit_list_cursor = 1;
+
+    crate::handler::handle_commit_select_action(&mut app, crate::input::Action::FocusRight);
+
+    assert_eq!(app.visible_commit_count, 2);
+}
+
+#[test]
+fn should_focus_diff_on_right_from_file_list() {
+    let mut app = build_app();
+    app.focused_panel = FocusedPanel::FileList;
+
+    crate::handler::handle_file_list_action(&mut app, crate::input::Action::FocusRight);
+
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+#[test]
+fn should_focus_file_list_on_left_from_diff() {
+    let mut app = build_app();
+    app.show_file_list = false;
+    app.focused_panel = FocusedPanel::Diff;
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::FocusLeft);
+
+    assert!(app.show_file_list);
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+}
+
+#[test]
+fn should_open_local_selector_on_left_from_file_list() {
+    let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
+    app.focused_panel = FocusedPanel::FileList;
+
+    crate::handler::handle_file_list_action(&mut app, crate::input::Action::FocusLeft);
+
+    assert_eq!(app.target_tab, TargetTab::Local);
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+}
+
+#[test]
 fn should_open_local_selector_on_escape_from_diff_without_search_highlights() {
     let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
 

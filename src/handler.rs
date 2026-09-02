@@ -1290,7 +1290,7 @@ fn handle_local_target_action(app: &mut App, action: Action) {
                 app.toggle_commit_selection_and_advance();
             }
         }
-        Action::ConfirmCommitSelect => {
+        Action::ConfirmCommitSelect | Action::FocusRight => {
             // if on expand row, expand commit instead of confirming
             if app.is_on_expand_row() {
                 if let Err(e) = app.expand_commit() {
@@ -1448,6 +1448,12 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::SearchPrev if app.file_tree_search_active() => app.file_tree_search_prev(),
         Action::CursorDown(n) => app.file_list_down(n),
         Action::CursorUp(n) => app.file_list_up(n),
+        Action::FocusLeft => {
+            if let Err(e) = app.enter_target_selector(TargetTab::Local) {
+                app.set_error(format!("Failed to load commits: {e}"));
+            }
+        }
+        Action::FocusRight => app.focused_panel = FocusedPanel::Diff,
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
         Action::ScrollRight(n) => app.file_list_state.scroll_right(n),
         Action::MouseScrollDown(n) => app.file_list_viewport_scroll_down(n),
@@ -1543,6 +1549,10 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
         Action::CursorUp(n) => app.cursor_up(n),
         Action::ScrollViewDown(n) => app.scroll_view_down(n),
         Action::ScrollViewUp(n) => app.scroll_view_up(n),
+        Action::FocusLeft => {
+            app.show_file_list = true;
+            app.focused_panel = FocusedPanel::FileList;
+        }
         Action::ScrollLeft(n) => app.scroll_left(n),
         Action::ScrollRight(n) => app.scroll_right(n),
         Action::MouseScrollDown(n) => app.scroll_view_down(n),

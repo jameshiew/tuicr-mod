@@ -33,6 +33,8 @@ pub enum Action {
     // Panel focus
     ToggleFocus,
     ToggleFocusReverse,
+    FocusLeft,
+    FocusRight,
     SelectFile,
 
     // Review actions
@@ -215,12 +217,14 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         // Panel focus
         (KeyCode::Tab, KeyModifiers::NONE) => Action::ToggleFocus,
         (KeyCode::BackTab, _) => Action::ToggleFocusReverse,
+        (KeyCode::Left, KeyModifiers::NONE) => Action::FocusLeft,
+        (KeyCode::Right, KeyModifiers::NONE) => Action::FocusRight,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SelectFile,
         (KeyCode::Enter, KeyModifiers::SHIFT) => Action::SelectFileFull,
 
         // Horizontal scrolling
-        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ScrollLeft(4),
-        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::ScrollRight(4),
+        (KeyCode::Char('h'), KeyModifiers::NONE) => Action::ScrollLeft(4),
+        (KeyCode::Char('l'), KeyModifiers::NONE) => Action::ScrollRight(4),
 
         // Review actions
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ToggleReviewed,
@@ -448,6 +452,7 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CommitSelectUp,
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
+        (KeyCode::Right, KeyModifiers::NONE) => Action::FocusRight,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -587,6 +592,30 @@ mod tests {
         assert_eq!(
             map_file_tree_mode(key(KeyCode::Char('h')), DEFAULT_LEADER_KEY),
             Action::ScrollLeft(4)
+        );
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('l')), DEFAULT_LEADER_KEY),
+            Action::ScrollRight(4)
+        );
+    }
+
+    #[test]
+    fn should_map_horizontal_arrows_to_panel_focus_in_normal_mode() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Left), DEFAULT_LEADER_KEY),
+            Action::FocusLeft
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Right), DEFAULT_LEADER_KEY),
+            Action::FocusRight
+        );
+    }
+
+    #[test]
+    fn should_map_right_arrow_to_forward_navigation_in_commit_select_mode() {
+        assert_eq!(
+            map_commit_select_mode(key(KeyCode::Right)),
+            Action::FocusRight
         );
     }
 
