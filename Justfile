@@ -1,5 +1,7 @@
-verify:
+fmt-check:
     cargo fmt --check
+
+verify: fmt-check
     cargo clippy --all-targets --all-features -- -D warnings
     @just test
 
