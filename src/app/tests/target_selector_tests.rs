@@ -2201,6 +2201,32 @@ fn should_treat_commits_as_alias_for_local_target_selector() {
 }
 
 #[test]
+fn should_open_local_selector_on_escape_from_diff_without_search_highlights() {
+    let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::ClearSearchHighlight);
+
+    assert_eq!(app.target_tab, TargetTab::Local);
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+}
+
+#[test]
+fn should_clear_search_highlights_before_escape_opens_local_selector() {
+    let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
+    app.search_highlight_visible = true;
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::ClearSearchHighlight);
+
+    assert!(!app.search_highlight_visible);
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::ClearSearchHighlight);
+
+    assert_eq!(app.target_tab, TargetTab::Local);
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+}
+
+#[test]
 fn should_open_pending_comment_summary_from_command_mode() {
     let mut app = build_app();
     app.input_mode = InputMode::Command;
