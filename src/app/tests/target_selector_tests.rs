@@ -2211,6 +2211,24 @@ fn should_open_local_selector_on_escape_from_diff_without_search_highlights() {
 }
 
 #[test]
+fn should_highlight_reviewed_commit_on_escape_to_local_selector() {
+    let reviewed_commit = dummy_commit("bbb");
+    let mut app = build_app_with_commits(vec![
+        dummy_commit("ccc"),
+        reviewed_commit.clone(),
+        dummy_commit("aaa"),
+    ]);
+    app.diff_source = DiffSource::CommitRange(vec![reviewed_commit.id.clone()]);
+    app.review_commits = vec![reviewed_commit];
+    app.commit_list = app.review_commits.clone();
+
+    crate::handler::handle_diff_action(&mut app, crate::input::Action::ClearSearchHighlight);
+
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert_eq!(app.commit_list[app.commit_list_cursor].id, "bbb");
+}
+
+#[test]
 fn should_clear_search_highlights_before_escape_opens_local_selector() {
     let mut app = build_app_with_commits(vec![dummy_commit("abc")]);
     app.search_highlight_visible = true;
