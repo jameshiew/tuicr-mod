@@ -63,7 +63,7 @@ impl Libgit2Backend {
             .ok()
             .and_then(|h| {
                 if h.is_branch() {
-                    h.shorthand().map(|s| s.to_string())
+                    h.shorthand().ok().map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -71,7 +71,7 @@ impl Libgit2Backend {
             .or_else(|| {
                 repo.find_reference("HEAD")
                     .ok()
-                    .and_then(|r| r.symbolic_target().map(str::to_string))
+                    .and_then(|r| r.symbolic_target().ok().flatten().map(str::to_string))
                     .and_then(|t| t.strip_prefix("refs/heads/").map(str::to_string))
             });
 

@@ -477,7 +477,7 @@ pub fn resolve_owner_repo(repo_path: &Path) -> Result<(Option<String>, String), 
 
 fn origin_owner_repo(repo: &Repository) -> Option<(String, String)> {
     let remote = repo.find_remote("origin").ok()?;
-    let url = remote.url()?;
+    let url = remote.url().ok()?;
     parse_remote_owner_repo(url)
 }
 

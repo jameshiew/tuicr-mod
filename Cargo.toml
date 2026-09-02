@@ -64,8 +64,8 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 
 # Git operations
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-git2 = { version = "0.20", default-features = false }
+git2 = { version = "0.21", default-features = false }
 
 # Static Linux builds need a target-native zlib instead of the host library.
 [target.'cfg(target_env = "musl")'.dependencies]
-git2 = { version = "0.20", default-features = false, features = ["zlib-ng-compat"] }
+git2 = { version = "0.21", default-features = false, features = ["zlib-ng-compat"] }

@@ -34,15 +34,15 @@ use crate::forge::traits::ForgeRepository;
 pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
     let repo = Repository::discover(repo_root).ok()?;
     if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
+        && let Ok(url) = remote.url()
         && let Some(parsed) = parse_github_remote_url(url)
     {
         return Some(parsed);
     }
     let remotes = repo.remotes().ok()?;
-    for name in remotes.iter().flatten() {
+    for name in remotes.iter().filter_map(|name| name.ok().flatten()) {
         if let Ok(remote) = repo.find_remote(name)
-            && let Some(url) = remote.url()
+            && let Ok(url) = remote.url()
             && let Some(parsed) = parse_github_remote_url(url)
         {
             return Some(parsed);
@@ -58,15 +58,15 @@ pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
 pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
     let repo = Repository::discover(repo_root).ok()?;
     if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
+        && let Ok(url) = remote.url()
         && let Some(parsed) = parse_gitlab_remote_url(url)
     {
         return Some(parsed);
     }
     let remotes = repo.remotes().ok()?;
-    for name in remotes.iter().flatten() {
+    for name in remotes.iter().filter_map(|name| name.ok().flatten()) {
         if let Ok(remote) = repo.find_remote(name)
-            && let Some(url) = remote.url()
+            && let Ok(url) = remote.url()
             && let Some(parsed) = parse_gitlab_remote_url(url)
         {
             return Some(parsed);
@@ -83,14 +83,14 @@ fn remote_urls(repo_root: &Path) -> Vec<String> {
     let mut all_urls: Vec<String> = Vec::new();
 
     if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
+        && let Ok(url) = remote.url()
     {
         all_urls.push(url.to_string());
     }
     if let Ok(remotes) = repo.remotes() {
-        for name in remotes.iter().flatten() {
+        for name in remotes.iter().filter_map(|name| name.ok().flatten()) {
             if let Ok(remote) = repo.find_remote(name)
-                && let Some(url) = remote.url()
+                && let Ok(url) = remote.url()
             {
                 all_urls.push(url.to_string());
             }
