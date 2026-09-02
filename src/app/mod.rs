@@ -984,9 +984,10 @@ pub enum PrThreadsEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffViewMode {
     Unified,
+    #[default]
     SideBySide,
 }
 

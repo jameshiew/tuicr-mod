@@ -117,7 +117,7 @@ impl App {
             // Force unified view: pristine mode has no diff, so side-by-side
             // would render two identical panes. The `:diff` command is gated
             // separately so the user cannot toggle back.
-            app.diff_view_mode = DiffViewMode::Unified;
+            app.set_diff_view_mode(DiffViewMode::Unified);
             // Default `--all-files` to single-file view: every tracked file
             // in one continuous scroll is overwhelming on large repos -- both
             // visually and at startup, since pristine still loads the whole
@@ -484,7 +484,7 @@ impl App {
             editor_launches: Vec::new(),
             input_mode,
             focused_panel: FocusedPanel::FileList,
-            diff_view_mode: DiffViewMode::Unified,
+            diff_view_mode: DiffViewMode::default(),
             relative_line_numbers: false,
             cursor_side: LineSide::New,
             file_list_state: FileListState::default(),

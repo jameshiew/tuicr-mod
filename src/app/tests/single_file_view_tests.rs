@@ -86,7 +86,7 @@ fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
         vcs_info.branch_name.clone(),
         SessionDiffSource::WorkingTree,
     );
-    App::build(
+    let mut app = App::build(
         Box::new(StubVcs(vcs_info.clone())),
         vcs_info,
         crate::theme::Theme::dark(),
@@ -100,7 +100,9 @@ fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
         None,
         None,
     )
-    .expect("build app")
+    .expect("build app");
+    app.set_diff_view_mode(DiffViewMode::Unified);
+    app
 }
 
 #[test]

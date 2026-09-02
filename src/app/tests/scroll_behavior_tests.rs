@@ -103,6 +103,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
     )
     .expect("failed to build test app");
 
+    app.set_diff_view_mode(DiffViewMode::Unified);
     app.diff_state.viewport_height = viewport;
     app.diff_state.visible_line_count = viewport;
     app.scroll_offset = scroll_offset_config;

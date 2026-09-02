@@ -83,7 +83,7 @@ fn build_app_with_files(files: Vec<DiffFile>, total_lines: u32) -> App {
         SessionDiffSource::WorkingTree,
     );
 
-    App::build(
+    let mut app = App::build(
         Box::new(MockVcs {
             info: vcs_info.clone(),
             total_lines,
@@ -100,7 +100,9 @@ fn build_app_with_files(files: Vec<DiffFile>, total_lines: u32) -> App {
         None,
         None,
     )
-    .expect("failed to build test app")
+    .expect("failed to build test app");
+    app.set_diff_view_mode(DiffViewMode::Unified);
+    app
 }
 
 fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {

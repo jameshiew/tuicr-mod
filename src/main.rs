@@ -327,8 +327,15 @@ fn main() -> anyhow::Result<()> {
         }
         // Pristine mode has no diff, so side-by-side would render two
         // identical panes. Honor the config for every other mode.
-        if cfg.diff_view.as_deref() == Some("side-by-side") && !app.is_pristine_mode {
-            app.diff_view_mode = app::DiffViewMode::SideBySide;
+        let configured_diff_view = match cfg.diff_view.as_deref() {
+            Some("unified") => Some(app::DiffViewMode::Unified),
+            Some("side-by-side") => Some(app::DiffViewMode::SideBySide),
+            _ => None,
+        };
+        if let Some(mode) = configured_diff_view
+            && !app.is_pristine_mode
+        {
+            app.set_diff_view_mode(mode);
         }
         if let Some(wrap) = cfg.wrap {
             app.diff_state.wrap_lines = wrap;

@@ -83,6 +83,11 @@ fn sbs_line(old_lineno: Option<u32>, new_lineno: Option<u32>) -> AnnotatedLine {
 }
 
 #[test]
+fn diff_view_defaults_to_side_by_side() {
+    assert_eq!(build_app().diff_view_mode, DiffViewMode::SideBySide);
+}
+
+#[test]
 fn context_line_honors_cursor_side_in_side_by_side() {
     let mut app = build_app();
     app.diff_view_mode = DiffViewMode::SideBySide;

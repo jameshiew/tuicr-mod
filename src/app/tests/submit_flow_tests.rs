@@ -117,6 +117,7 @@ fn make_pr_app_with_single_modified_file(file_path: &str) -> App {
         None,
     )
     .expect("build app");
+    app.set_diff_view_mode(DiffViewMode::Unified);
     app.current_pr_head = Some("abcdef0123".to_string());
     app
 }

@@ -85,16 +85,23 @@ impl App {
             self.set_message("side-by-side not available in pristine mode");
             return;
         }
-        self.diff_view_mode = match self.diff_view_mode {
+        let mode = match self.diff_view_mode {
             DiffViewMode::Unified => DiffViewMode::SideBySide,
             DiffViewMode::SideBySide => DiffViewMode::Unified,
         };
-        let mode_name = match self.diff_view_mode {
+        self.set_diff_view_mode(mode);
+        let mode_name = match mode {
             DiffViewMode::Unified => "unified",
             DiffViewMode::SideBySide => "side-by-side",
         };
         self.set_message(format!("Diff view mode: {mode_name}"));
-        self.rebuild_annotations();
+    }
+
+    pub fn set_diff_view_mode(&mut self, mode: DiffViewMode) {
+        if self.diff_view_mode != mode {
+            self.diff_view_mode = mode;
+            self.rebuild_annotations();
+        }
     }
 
     pub fn toggle_file_list(&mut self) {
