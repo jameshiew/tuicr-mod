@@ -16,8 +16,6 @@ pub struct CliArgs {
     pub appearance: Option<AppearanceArg>,
     /// Output to stdout instead of clipboard when exporting.
     pub output_to_stdout: bool,
-    /// Skip checking for updates on startup.
-    pub no_update_check: bool,
     /// Commit/revision range to review.
     pub revisions: Option<String>,
     /// Skip commit selector and review uncommitted changes directly.
@@ -34,10 +32,6 @@ pub struct CliArgs {
     pub repo_url: Option<String>,
     /// Non-interactive review session operation.
     pub review_command: Option<ReviewCommand>,
-    /// Update the installed tuicr binary and exit.
-    pub update_command: bool,
-    /// Exact version requested by `tuicr update`, if any.
-    pub update_version: Option<semver::Version>,
 }
 
 #[derive(Parser, Debug)]
@@ -119,10 +113,6 @@ struct TuiOptions {
     #[arg(long = "stdout", action = ArgAction::SetTrue)]
     stdout: bool,
 
-    /// Skip checking for updates on startup.
-    #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
-    no_update_check: bool,
-
     /// Override the forge repo for PR operations. Accepts GitHub, GitLab, or
     /// Azure DevOps URLs (HTTPS, SCP-style SSH, or ssh:// forms).
     #[arg(
@@ -144,12 +134,6 @@ enum Subcmd {
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
-    },
-    /// Update the installed tuicr binary.
-    Update {
-        /// Install a specific SemVer release, including an older known-good version.
-        #[arg(value_name = "VERSION")]
-        version: Option<semver::Version>,
     },
 }
 
@@ -275,42 +259,23 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
-        let (options, pr_target, review_command, update_version, update_command) = match cli.command
-        {
+        let (options, pr_target, review_command) = match cli.command {
             Some(Subcmd::Tui(command)) => match command.command {
                 Some(TuiSubcmd::Pr(pr)) => (
                     cli.tui_options.merge(command.options).merge(pr.options),
                     Some(pr.target),
                     None,
-                    None,
-                    false,
                 ),
-                None => (
-                    cli.tui_options.merge(command.options),
-                    None,
-                    None,
-                    None,
-                    false,
-                ),
+                None => (cli.tui_options.merge(command.options), None, None),
             },
-            Some(Subcmd::Pr(pr)) => (
-                cli.tui_options.merge(pr.options),
-                Some(pr.target),
-                None,
-                None,
-                false,
-            ),
-            Some(Subcmd::Review { command }) => {
-                (TuiOptions::default(), None, Some(command), None, false)
-            }
-            Some(Subcmd::Update { version }) => (TuiOptions::default(), None, None, version, true),
-            None => (cli.tui_options, None, None, None, false),
+            Some(Subcmd::Pr(pr)) => (cli.tui_options.merge(pr.options), Some(pr.target), None),
+            Some(Subcmd::Review { command }) => (TuiOptions::default(), None, Some(command)),
+            None => (cli.tui_options, None, None),
         };
         Self {
             theme: options.theme,
             appearance: options.appearance,
             output_to_stdout: options.stdout,
-            no_update_check: options.no_update_check,
             revisions: options.revisions,
             working_tree: options.working_tree,
             path_filter: options.path_filter,
@@ -319,8 +284,6 @@ impl From<Cli> for CliArgs {
             pr_target,
             repo_url: options.repo_url,
             review_command,
-            update_command,
-            update_version,
         }
     }
 }
@@ -330,7 +293,6 @@ impl TuiOptions {
         self.theme.is_some()
             || self.appearance.is_some()
             || self.stdout
-            || self.no_update_check
             || self.revisions.is_some()
             || self.working_tree
             || self.path_filter.is_some()
@@ -344,7 +306,6 @@ impl TuiOptions {
             theme: later.theme.or(self.theme),
             appearance: later.appearance.or(self.appearance),
             stdout: self.stdout || later.stdout,
-            no_update_check: self.no_update_check || later.no_update_check,
             revisions: later.revisions.or(self.revisions),
             working_tree: self.working_tree || later.working_tree,
             path_filter: later.path_filter.or(self.path_filter),
@@ -374,7 +335,6 @@ impl Cli {
     fn non_tui_command_name(&self) -> Option<&'static str> {
         match self.command {
             Some(Subcmd::Review { .. }) => Some("review"),
-            Some(Subcmd::Update { .. }) => Some("update"),
             _ => None,
         }
     }
@@ -684,40 +644,12 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_no_update_check_flag() {
-        let parsed = parse_for_test(&["tuicr", "--no-update-check"]).expect("parse should succeed");
-        assert!(parsed.no_update_check);
-    }
+    fn should_reject_removed_update_interfaces() {
+        let update = parse_for_test(&["tuicr", "update"]).expect_err("parse should fail");
+        assert_eq!(update.kind(), ErrorKind::InvalidSubcommand);
 
-    #[test]
-    fn should_parse_update_command_without_tui_options() {
-        let parsed = parse_for_test(&["tuicr", "update"]).expect("parse should succeed");
-        assert!(parsed.update_command);
-        assert_eq!(parsed.update_version, None);
-        assert_eq!(parsed.review_command, None);
-    }
-
-    #[test]
-    fn should_parse_specific_update_version() {
-        let parsed = parse_for_test(&["tuicr", "update", "0.18.0"]).expect("parse should succeed");
-        assert!(parsed.update_command);
-        assert_eq!(
-            parsed.update_version.as_ref().map(ToString::to_string),
-            Some("0.18.0".to_string())
-        );
-    }
-
-    #[test]
-    fn should_reject_invalid_update_version() {
-        let err = parse_for_test(&["tuicr", "update", "latest"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::ValueValidation);
-    }
-
-    #[test]
-    fn should_reject_tui_options_with_update_command() {
-        let err =
-            parse_for_test(&["tuicr", "--theme", "dark", "update"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        let flag = parse_for_test(&["tuicr", "--no-update-check"]).expect_err("parse should fail");
+        assert_eq!(flag.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]

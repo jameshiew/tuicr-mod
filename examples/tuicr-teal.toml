@@ -47,8 +47,6 @@ message_warning_fg = "#061827"
 message_warning_bg = "#f2c36b"
 message_error_fg = "#061827"
 message_error_bg = "#ff6b8a"
-update_badge_fg = "#061827"
-update_badge_bg = "#f2c36b"
 
 mode_fg = "#061827"
 mode_bg = "#4ee3ff"

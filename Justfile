@@ -16,4 +16,4 @@ smoke-test:
     }
     trap restore_terminal_size EXIT
     stty rows 40 cols 160
-    cargo run --quiet -- --revisions HEAD --no-update-check
+    cargo run --quiet -- --revisions HEAD

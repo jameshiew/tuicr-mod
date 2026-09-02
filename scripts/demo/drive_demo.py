@@ -333,7 +333,7 @@ def main() -> int:
 
     child = pexpect.spawn(
         str(tuicr),
-        ["--theme", "tokyo-night-storm", "--no-update-check"],
+        ["--theme", "tokyo-night-storm"],
         cwd=str(fixture),
         env=env,
         dimensions=(args.rows, args.cols),

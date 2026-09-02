@@ -21,7 +21,6 @@ use crate::persistence::load_latest_session_for_context;
 use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
-use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{
@@ -1374,8 +1373,6 @@ pub struct App {
     /// `annotations_replaced` is how many annotation entries exist for the comment being
     /// edited (0 for a new comment). Used by `is_line_highlighted` to adjust annotation lookups.
     pub comment_input_annotation_offset: Option<(usize, usize, usize)>,
-    /// Information about available updates (set by background check)
-    pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
 

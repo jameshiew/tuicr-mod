@@ -41,7 +41,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["help", "h"], CommandKind::Help),
     CommandSpec::new(&["messages"], CommandKind::MessageDetails),
     CommandSpec::new(&["version"], CommandKind::Version),
-    CommandSpec::new(&["update"], CommandKind::Update),
     CommandSpec::new(&["set wrap"], CommandKind::SetWrap),
     CommandSpec::new(&["set wrap!"], CommandKind::ToggleWrap),
     CommandSpec::new(&["wrap"], CommandKind::ToggleWrap),
@@ -142,7 +141,6 @@ enum CommandKind {
     MessageDetails,
     Summary,
     Version,
-    Update,
     SetWrap,
     ToggleWrap,
     SetRelativeLineNumbers(bool),
@@ -907,10 +905,6 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.set_message(format!("tuicr v{}", env!("CARGO_PKG_VERSION")));
             CommandAfterDispatch::ExitCommandMode
         }
-        CommandKind::Update => {
-            check_for_updates(app);
-            CommandAfterDispatch::ExitCommandMode
-        }
         CommandKind::SetWrap => {
             app.set_diff_wrap(true);
             CommandAfterDispatch::ExitCommandMode
@@ -1029,29 +1023,6 @@ fn reload_review(app: &mut App) {
                 }
             }
             Err(e) => app.set_error(format!("Reload failed: {e}")),
-        }
-    }
-}
-
-fn check_for_updates(app: &mut App) {
-    match crate::update::check_for_updates() {
-        crate::update::UpdateCheckResult::UpdateAvailable(info) => {
-            app.set_message(format!(
-                "Update available: v{} -> v{}",
-                info.current_version, info.latest_version
-            ));
-        }
-        crate::update::UpdateCheckResult::UpToDate(info) => {
-            app.set_message(format!("tuicr v{} is up to date", info.current_version));
-        }
-        crate::update::UpdateCheckResult::AheadOfRelease(info) => {
-            app.set_message(format!(
-                "You're from the future! v{} > v{}",
-                info.current_version, info.latest_version
-            ));
-        }
-        crate::update::UpdateCheckResult::Failed(err) => {
-            app.set_warning(format!("Update check failed: {err}"));
         }
     }
 }

@@ -146,7 +146,6 @@ pub struct AppConfig {
     /// Disabled by default, and `0` disables it too. Ignored for
     /// pull-request reviews and `--all-files` mode.
     pub diff_watch_interval_ms: Option<usize>,
-    pub no_update_check: Option<bool>,
     /// Render single-file and pristine views in full-width mode by default.
     /// Pristine `--all-files` mode always enables this regardless of this
     /// setting. Defaults to true.
@@ -209,7 +208,6 @@ const KNOWN_KEYS: &[&str] = &[
     "scroll_offset",
     "review_watch_interval_ms",
     "diff_watch_interval_ms",
-    "no_update_check",
     "single_file_view",
     "username",
     "forge",
@@ -449,7 +447,6 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
         diff_watch_interval_ms: read_usize(table, "diff_watch_interval_ms", &mut warnings),
-        no_update_check: read_bool(table, "no_update_check", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
         forge: table
@@ -1382,52 +1379,6 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'leader' must be a string; ignoring value"
-        );
-    }
-
-    // no_update_check
-
-    #[test]
-    fn should_parse_no_update_check_true() {
-        let outcome = parse_config("no_update_check = true\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
-            Some(true)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_parse_no_update_check_false() {
-        let outcome = parse_config("no_update_check = false\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
-            Some(false)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_default_no_update_check_to_none() {
-        let outcome = parse_config("\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
-            None
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_warn_and_ignore_no_update_check_with_invalid_type() {
-        let outcome = parse_config("no_update_check = \"yes\"\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.no_update_check),
-            None
-        );
-        assert_eq!(outcome.warnings.len(), 1);
-        assert_eq!(
-            outcome.warnings[0],
-            "Warning: Config key 'no_update_check' must be a boolean; ignoring value"
         );
     }
 

@@ -22,7 +22,6 @@ pub mod text_edit;
 pub mod theme;
 pub mod tuicrignore;
 pub mod ui;
-pub mod update;
 pub mod vcs;
 
 pub use error::{Result, TuicrError};

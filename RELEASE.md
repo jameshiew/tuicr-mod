@@ -38,8 +38,7 @@ If you need to rebuild binaries for an existing release:
 4. **Click "Run workflow"**
 
 Linux binaries are built for both GNU and musl targets, and their archive names
-use the matching target triples. The static GNU archives preserve compatibility
-with existing `tuicr update` installations.
+use the matching target triples.
 
 ## What Gets Updated
 
