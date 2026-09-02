@@ -1818,7 +1818,9 @@ mod remote_comments_snapshot_tests {
     #[test]
     fn should_render_full_file_header_for_revision_diff() {
         let mut app = make_revision_app(vec![header_only_diff_file_at("README.md")]);
+        app.is_single_file_view = false;
         app.diff_state.wrap_lines = true;
+        app.rebuild_annotations();
 
         let body = body_text(&draw_unified_diff(&mut app));
 

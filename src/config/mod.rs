@@ -148,8 +148,8 @@ pub struct AppConfig {
     pub diff_watch_interval_ms: Option<usize>,
     pub no_update_check: Option<bool>,
     /// Render single-file and pristine views in full-width mode by default.
-    /// Pristine `--all-files` mode already defaults to true regardless of
-    /// this setting. Defaults to false.
+    /// Pristine `--all-files` mode always enables this regardless of this
+    /// setting. Defaults to true.
     pub single_file_view: Option<bool>,
     /// Display name stamped on comments authored locally in the TUI, and
     /// used as the "viewer" identity for per-author coloring in the comment

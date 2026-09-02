@@ -602,6 +602,8 @@ mod tests {
             None,
         )
         .expect("build app");
+        app.is_single_file_view = false;
+        app.rebuild_annotations();
         let path = PathBuf::from("src/lib.rs");
         let review = app.session.get_file_mut(&path).expect("file registered");
         review.add_line_comment(

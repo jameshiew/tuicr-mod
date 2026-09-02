@@ -346,6 +346,7 @@ fn should_mark_a_commit_only_file_reviewed_after_narrowing_the_commit_pane() {
 #[test]
 fn should_mark_a_hunk_reviewed_in_a_commit_only_file_after_narrowing_the_commit_pane() {
     let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
+    app.is_single_file_view = false;
     app.review_commits = app.commit_list.clone();
     let path = PathBuf::from("src/only_in_commit.rs");
     app.commit_diff_cache

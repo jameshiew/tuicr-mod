@@ -341,10 +341,12 @@ fn main() -> anyhow::Result<()> {
             app.diff_state.wrap_lines = wrap;
         }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
-        // Open in single-file view when the user opts in. Pristine
-        // `--all-files` already turned it on inside `App::new`, so we
-        // only toggle if it's still off.
-        if cfg.single_file_view == Some(true) && !app.is_single_file_view {
+        // Single-file view is the default. Honor an explicit override except
+        // in pristine `--all-files` mode, where it is always enabled.
+        if let Some(enabled) = cfg.single_file_view
+            && !app.is_pristine_mode
+            && enabled != app.is_single_file_view
+        {
             app.toggle_single_file_view();
         }
         app.export = cfg.resolved_export();

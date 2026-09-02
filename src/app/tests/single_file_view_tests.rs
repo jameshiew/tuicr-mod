@@ -106,6 +106,13 @@ fn app_with_root(root_path: PathBuf, files: Vec<DiffFile>) -> App {
 }
 
 #[test]
+fn single_file_view_is_the_default() {
+    let app = app_with(vec![file("a.rs", vec![hunk(1, 1)])]);
+
+    assert!(app.is_single_file_view);
+}
+
+#[test]
 fn collapsing_selected_directory_keeps_tree_selection() {
     let mut app = app_with(vec![
         file("README.md", vec![hunk(1, 1)]),
@@ -341,20 +348,20 @@ fn toggle_preserves_file_position() {
     ];
     let mut app = app_with(files);
     app.diff_state.current_file_idx = 1;
-    let expected_multi = app.calculate_file_scroll_offset(1);
-    app.diff_state.scroll_offset = expected_multi;
-
-    app.toggle_single_file_view();
-    assert!(app.is_single_file_view);
     let expected_single = app.calculate_file_scroll_offset(1);
-    assert_eq!(app.diff_state.scroll_offset, expected_single);
-    assert_eq!(app.diff_state.cursor_line, expected_single);
+    app.diff_state.scroll_offset = expected_single;
 
     app.toggle_single_file_view();
     assert!(!app.is_single_file_view);
-    let expected_back = app.calculate_file_scroll_offset(1);
-    assert_eq!(app.diff_state.scroll_offset, expected_back);
-    assert_eq!(app.diff_state.cursor_line, expected_back);
+    let expected_multi = app.calculate_file_scroll_offset(1);
+    assert_eq!(app.diff_state.scroll_offset, expected_multi);
+    assert_eq!(app.diff_state.cursor_line, expected_multi);
+
+    app.toggle_single_file_view();
+    assert!(app.is_single_file_view);
+    let expected_single_again = app.calculate_file_scroll_offset(1);
+    assert_eq!(app.diff_state.scroll_offset, expected_single_again);
+    assert_eq!(app.diff_state.cursor_line, expected_single_again);
 }
 
 #[test]
@@ -536,7 +543,6 @@ fn effective_file_height_is_zero_for_non_current_in_single_file_view() {
 #[test]
 fn reviewed_banner_keeps_annotations_aligned_with_rendered_rows() {
     let mut app = app_with(vec![file("a.rs", vec![hunk(1, 3)])]);
-    app.toggle_single_file_view();
 
     let before = app.line_annotations.len();
     app.toggle_reviewed();

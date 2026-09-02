@@ -101,6 +101,7 @@ fn build_app_with_files(files: Vec<DiffFile>, total_lines: u32) -> App {
         None,
     )
     .expect("failed to build test app");
+    app.is_single_file_view = false;
     app.set_diff_view_mode(DiffViewMode::Unified);
     app
 }

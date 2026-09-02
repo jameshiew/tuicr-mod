@@ -104,6 +104,8 @@ fn app_with(paths: &[&str]) -> App {
         None,
     )
     .expect("build app");
+    app.is_single_file_view = false;
+    app.rebuild_annotations();
     // The tree starts collapsed; every assertion here is about which files
     // survive the filter, not about expand state.
     app.expand_all_dirs();

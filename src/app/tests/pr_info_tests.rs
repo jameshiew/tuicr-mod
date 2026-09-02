@@ -107,6 +107,7 @@ fn build_pr_app() -> App {
         None,
     )
     .expect("build pr app");
+    app.is_single_file_view = false;
     app.pr_info = Some(sample_pr_info());
     app.rebuild_annotations();
     app
