@@ -1,7 +1,10 @@
 verify:
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
-    cargo test --all-features
+    @just test
+
+test:
+    cargo nextest run --workspace --locked --status-level fail --final-status-level fail --all-features
 
 smoke-test:
     #!/usr/bin/env bash
