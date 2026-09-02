@@ -449,7 +449,7 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
         (KeyCode::Tab, KeyModifiers::NONE) => Action::TargetSelectorTabNext,
         (KeyCode::BackTab, _) => Action::TargetSelectorTabPrev,
@@ -1021,9 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn should_map_q_to_quit_hint_instead_of_quitting() {
-        // `q` only quits via `:q` now; the modes that used to bind it to
-        // Action::Quit now show a transitional hint instead.
+    fn should_map_q_by_mode() {
         assert_eq!(
             map_normal_mode(key(KeyCode::Char('q')), DEFAULT_LEADER_KEY),
             Action::QuitHint
@@ -1031,7 +1029,7 @@ mod tests {
         assert_eq!(map_visual_mode(key(KeyCode::Char('q'))), Action::QuitHint);
         assert_eq!(
             map_commit_select_mode(key(KeyCode::Char('q'))),
-            Action::QuitHint
+            Action::Quit
         );
         assert_eq!(
             map_submit_action_picker_mode(key(KeyCode::Char('q'))),

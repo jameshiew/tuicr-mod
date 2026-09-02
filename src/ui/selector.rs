@@ -542,7 +542,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.target_tab {
             TargetTab::Local => {
-                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} :q quit"
+                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} q quit"
                     .to_string()
             }
             TargetTab::PullRequests => {
@@ -550,9 +550,9 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     PullRequestListScope::Open => "r requested",
                     PullRequestListScope::ReviewRequested => "r all PRs",
                 };
-                format!("   j/k navigate · ↵ open · {scope_hint} · / filter · esc back")
+                format!("   j/k navigate · ↵ open · {scope_hint} · / filter · q quit · esc back")
             }
-            TargetTab::Sessions => "   j/k navigate · ↵ resume · esc back".to_string(),
+            TargetTab::Sessions => "   j/k navigate · ↵ resume · q quit · esc back".to_string(),
         }
     };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
@@ -970,6 +970,25 @@ mod selector_render_snapshot_tests {
             footer.contains("Failed to load commits"),
             "expected status message in selector footer, got: {footer:?}"
         );
+    }
+
+    #[test]
+    fn should_render_q_quit_hint_on_each_target_tab() {
+        let mut app = make_app(vec![commit(0)]);
+
+        for target_tab in [
+            crate::app::TargetTab::Local,
+            crate::app::TargetTab::PullRequests,
+            crate::app::TargetTab::Sessions,
+        ] {
+            app.target_tab = target_tab;
+            let buffer = draw(&mut app);
+            let footer = row_text(&buffer, buffer.area.height - 1);
+            assert!(
+                footer.contains("q quit"),
+                "expected q quit hint in selector footer, got: {footer:?}"
+            );
+        }
     }
 
     fn session_summary(slug: &str, comments: usize, active: bool) -> SessionSummary {

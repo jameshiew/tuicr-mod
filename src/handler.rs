@@ -1237,7 +1237,6 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
         Action::EnterCommandMode => app.enter_command_mode(),
         Action::Quit => app.should_quit = true,
-        Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
         Action::ExitMode => {
             // Esc during an in-flight PR open aborts the load and stays
             // in the selector. Takes precedence over the

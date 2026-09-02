@@ -370,10 +370,10 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
-                "  Esc       ",
+                "  q / Esc   ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Return to the diff"),
+            Span::raw("Quit / return to the diff"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
