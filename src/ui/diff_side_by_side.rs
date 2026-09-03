@@ -1926,7 +1926,6 @@ mod side_by_side_snapshot_tests {
     use crate::model::{
         DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, ReviewSession, SessionDiffSource,
     };
-    use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
     use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
@@ -1944,10 +1943,7 @@ mod side_by_side_snapshot_tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<Vec<DiffFile>> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(
@@ -2000,6 +1996,7 @@ mod side_by_side_snapshot_tests {
             old_count: 1,
             new_start: 1,
             new_count: 2,
+            highlight: Default::default(),
         };
         let hunks = vec![hunk];
         let content_hash = DiffFile::compute_content_hash(&hunks);
@@ -2011,6 +2008,7 @@ mod side_by_side_snapshot_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         }
     }
@@ -2098,6 +2096,7 @@ mod side_by_side_snapshot_tests {
             old_count: 0,
             new_start: 1,
             new_count: 120,
+            highlight: Default::default(),
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let path = PathBuf::from("src/lib.rs");
@@ -2109,6 +2108,7 @@ mod side_by_side_snapshot_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         };
 
@@ -2167,6 +2167,7 @@ mod side_by_side_snapshot_tests {
             old_count: 1,
             new_start: 1,
             new_count: 1,
+            highlight: Default::default(),
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
@@ -2177,6 +2178,7 @@ mod side_by_side_snapshot_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         }
     }
@@ -2196,6 +2198,7 @@ mod side_by_side_snapshot_tests {
             old_count: 1,
             new_start: 0,
             new_count: 0,
+            highlight: Default::default(),
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
@@ -2206,6 +2209,7 @@ mod side_by_side_snapshot_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         }
     }
@@ -2365,6 +2369,7 @@ mod side_by_side_snapshot_tests {
             old_count: 0,
             new_start: 1,
             new_count,
+            highlight: Default::default(),
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         DiffFile {
@@ -2375,6 +2380,7 @@ mod side_by_side_snapshot_tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: true,
+            whole_file_text: None,
             content_hash,
         }
     }

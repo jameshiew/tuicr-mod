@@ -1,10 +1,24 @@
+//! Syntax highlighting for diff lines.
+//!
+//! Highlighting is the dominant cost of opening a diff (roughly 40µs per line
+//! against 1µs to parse it), so it never runs at load time. Backends produce
+//! `DiffLine`s with no spans; the app then asks for spans lazily, for the
+//! hunks the viewport touches, in bounded slices of work per frame. Each
+//! hunk records its progress in [`HunkHighlight`] and the app keeps the
+//! parser state to continue from in [`HunkStates`], so a hunk can be advanced
+//! a few lines at a time.
+
 mod cmark;
 
 use ratatui::style::{Color, Modifier, Style};
+use std::collections::HashMap;
 use std::path::Path;
+use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use two_face::theme::EmbeddedThemeName;
 
-use crate::model::diff_types::LineOrigin;
+use crate::model::diff_types::{DiffFile, DiffHunk, LineOrigin};
+use crate::vcs::tabify;
 
 /// A single line of highlighted spans (style + text pairs).
 pub(crate) type HighlightedSpans = Vec<(Style, String)>;
@@ -44,6 +58,118 @@ pub(crate) fn needs_full_file_highlight(path: &Path) -> bool {
     )
 }
 
+/// Highlighting progress for one hunk: how many leading display lines carry
+/// their final spans, and which [`HunkStates`] entry holds the parser state
+/// needed to continue.
+///
+/// Display lines are fed to syntect in order, so the state after line `n` is
+/// exactly what line `n + 1` needs. Context lines advance both sides;
+/// deletions advance the old side and additions the new, matching how a
+/// unified hunk interleaves the two files.
+///
+/// The parser state itself is not stored here: it is not `Send`, and hunks
+/// cross threads on the diff-watch channel. A hunk whose entry is missing or
+/// out of step with `done` (a clone, or a table that was pruned) starts over
+/// from its first line, so a stale entry can only cost work, never spans.
+#[derive(Debug, Clone, Default)]
+pub struct HunkHighlight {
+    /// Number of leading display lines with final spans.
+    done: usize,
+    complete: bool,
+    /// Id of this hunk's in-progress parser state in the app's [`HunkStates`].
+    state: Option<u64>,
+}
+
+impl HunkHighlight {
+    /// Whether display line `line_idx` already carries its final spans.
+    pub fn covers(&self, line_idx: usize) -> bool {
+        self.complete || line_idx < self.done
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    fn mark_complete(&mut self) {
+        self.done = usize::MAX;
+        self.complete = true;
+        self.state = None;
+    }
+}
+
+/// Parser states for hunks that are partway through highlighting. Owned by
+/// the app on the main thread; entries are removed when a hunk completes.
+#[derive(Debug, Default)]
+pub struct HunkStates {
+    entries: HashMap<u64, HunkStateEntry>,
+    next_id: u64,
+}
+
+#[derive(Debug)]
+struct HunkStateEntry {
+    /// The hunk's `done` count when this state was stored. Continuing from it
+    /// is only valid for a hunk that still reports the same count.
+    done: usize,
+    old: LineState,
+    new: LineState,
+}
+
+/// Above this many in-progress hunks the table is cleared. Entries belong to
+/// hunks the user scrolled partway through, so the table is usually tiny;
+/// hunks from a replaced diff would otherwise linger forever.
+const MAX_HUNK_STATES: usize = 256;
+
+impl HunkStates {
+    fn take(&mut self, id: u64, done: usize) -> Option<(LineState, LineState)> {
+        let entry = self.entries.remove(&id)?;
+        (entry.done == done).then_some((entry.old, entry.new))
+    }
+
+    fn store(&mut self, done: usize, old: LineState, new: LineState) -> u64 {
+        if self.entries.len() >= MAX_HUNK_STATES {
+            self.entries.clear();
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.entries.insert(id, HunkStateEntry { done, old, new });
+        id
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// syntect parser and style state for one side of a hunk.
+#[derive(Debug, Clone)]
+struct LineState {
+    parse: ParseState,
+    highlight: HighlightState,
+}
+
+impl LineState {
+    fn new(syntax: &SyntaxReference, highlighter: &Highlighter<'_>) -> Self {
+        Self {
+            parse: ParseState::new(syntax),
+            highlight: HighlightState::new(highlighter, ScopeStack::new()),
+        }
+    }
+
+    fn step(
+        &mut self,
+        line: &str,
+        syntax_set: &SyntaxSet,
+        highlighter: &Highlighter<'_>,
+    ) -> Option<HighlightedSpans> {
+        let text = format!("{line}\n");
+        let ops = self.parse.parse_line(&text, syntax_set).ok()?;
+        let ranges: Vec<(syntect::highlighting::Style, &str)> =
+            HighlightIterator::new(&mut self.highlight, &ops, &text, highlighter).collect();
+        Some(SyntaxHighlighter::ranges_to_spans(ranges))
+    }
+}
+
 /// Helper to highlight lines of code from a diff
 pub struct SyntaxHighlighter {
     pub syntax_set: syntect::parsing::SyntaxSet,
@@ -54,13 +180,6 @@ pub struct SyntaxHighlighter {
     pub del_bg: Color,
     /// Markdown construct colours, resolved from `theme` once at construction.
     markdown_palette: cmark::MarkdownPalette,
-}
-
-pub(crate) struct DiffHighlightSequences {
-    pub old_lines: Vec<String>,
-    pub new_lines: Vec<String>,
-    pub old_line_indices: Vec<Option<usize>>,
-    pub new_line_indices: Vec<Option<usize>>,
 }
 
 impl Default for SyntaxHighlighter {
@@ -95,23 +214,175 @@ impl SyntaxHighlighter {
         }
     }
 
-    /// A highlighter that resolves no syntax at all, so `highlight_file_lines`
-    /// returns `None` for every path without doing any syntect work.
+    /// Advance the highlighting of `file`'s hunk `hunk_idx` until display
+    /// line `upto` carries its spans, processing at most `budget` lines.
+    /// Returns the number of lines processed.
     ///
-    /// The diff watcher uses this to parse a diff when it needs the content but not
-    /// the colours. `DiffFile::compute_content_hash` runs during parsing over line
-    /// text alone, and highlighting only ever assigns spans, so a diff parsed this
-    /// way fingerprints identically to a highlighted one. Measured at 3.1ms against
-    /// 197ms for the same 4,000-line diff.
-    pub(crate) fn plain() -> Self {
-        let theme = syntect::highlighting::Theme::default();
-        let markdown_palette = cmark::MarkdownPalette::resolve(&theme);
-        Self {
-            syntax_set: syntect::parsing::SyntaxSet::new(),
-            theme,
-            add_bg: Color::Reset,
-            del_bg: Color::Reset,
-            markdown_palette,
+    /// Container grammars (see [`needs_full_file_highlight`]) ignore
+    /// `hunk_idx`, `upto` and `budget`: their whole file is highlighted in
+    /// one go from the text the backend attached, and every hunk of the file
+    /// is completed together.
+    pub(crate) fn advance_file(
+        &self,
+        states: &mut HunkStates,
+        file: &mut DiffFile,
+        hunk_idx: usize,
+        upto: usize,
+        budget: usize,
+    ) -> usize {
+        if file.is_commit_message {
+            mark_all_complete(file);
+            return 0;
+        }
+        let Some(path) = file.new_path.as_deref().or(file.old_path.as_deref()) else {
+            mark_all_complete(file);
+            return 0;
+        };
+        if needs_full_file_highlight(path) {
+            return self.highlight_whole_file(file);
+        }
+        let path = path.to_path_buf();
+        match file.hunks.get_mut(hunk_idx) {
+            Some(hunk) => self.advance_hunk(states, &path, hunk, upto, budget),
+            None => 0,
+        }
+    }
+
+    /// Highlight every line of every hunk in `files`. Costs the whole diff at
+    /// once, so it is for tests and benchmarks only.
+    #[cfg(test)]
+    pub(crate) fn highlight_files_fully(&self, files: &mut [DiffFile]) {
+        let mut states = HunkStates::default();
+        for file in files {
+            for hunk_idx in 0..file.hunks.len() {
+                self.advance_file(&mut states, file, hunk_idx, usize::MAX, usize::MAX);
+            }
+            mark_all_complete(file);
+        }
+    }
+
+    fn advance_hunk(
+        &self,
+        states: &mut HunkStates,
+        path: &Path,
+        hunk: &mut DiffHunk,
+        upto: usize,
+        budget: usize,
+    ) -> usize {
+        if hunk.highlight.covers(upto) || budget == 0 {
+            return 0;
+        }
+        let total = hunk.lines.len();
+        if total == 0 {
+            hunk.highlight.mark_complete();
+            return 0;
+        }
+
+        let highlighter = Highlighter::new(&self.theme);
+        let resumed = hunk
+            .highlight
+            .state
+            .take()
+            .and_then(|id| states.take(id, hunk.highlight.done));
+        let (mut old, mut new) = match resumed {
+            Some(pair) => pair,
+            None => {
+                let Some(syntax) = self.syntax_for_hunk(path, hunk) else {
+                    hunk.highlight.mark_complete();
+                    return 0;
+                };
+                hunk.highlight.done = 0;
+                (
+                    LineState::new(syntax, &highlighter),
+                    LineState::new(syntax, &highlighter),
+                )
+            }
+        };
+
+        let mut next = hunk.highlight.done;
+        let end = upto.min(total - 1);
+        let mut processed = 0;
+        while next <= end && processed < budget {
+            let line = &mut hunk.lines[next];
+            let spans = match line.origin {
+                LineOrigin::Context => {
+                    old.step(&line.content, &self.syntax_set, &highlighter);
+                    new.step(&line.content, &self.syntax_set, &highlighter)
+                }
+                LineOrigin::Addition => new.step(&line.content, &self.syntax_set, &highlighter),
+                LineOrigin::Deletion => old.step(&line.content, &self.syntax_set, &highlighter),
+            };
+            line.highlighted_spans = spans.map(|s| self.apply_diff_background(s, line.origin));
+            next += 1;
+            processed += 1;
+        }
+
+        if next >= total {
+            hunk.highlight.mark_complete();
+        } else {
+            hunk.highlight.done = next;
+            hunk.highlight.state = Some(states.store(next, old, new));
+        }
+        processed
+    }
+
+    fn syntax_for_hunk(&self, path: &Path, hunk: &DiffHunk) -> Option<&SyntaxReference> {
+        self.get_syntax(path).or_else(|| {
+            hunk.lines
+                .first()
+                .and_then(|line| self.syntax_set.find_syntax_by_first_line(&line.content))
+        })
+    }
+
+    /// Highlight a container-grammar file from the whole-file text attached
+    /// by the backend, then drop that text. Lines whose side was not
+    /// available keep no spans. Returns the number of file lines highlighted.
+    fn highlight_whole_file(&self, file: &mut DiffFile) -> usize {
+        let text = file.whole_file_text.take();
+        let path = file.new_path.as_deref().or(file.old_path.as_deref());
+        let mut highlighted = 0;
+        if let (Some(path), Some(text)) = (path, text) {
+            let old = text
+                .old
+                .as_deref()
+                .and_then(|content| self.highlight_content(path, content));
+            let new = text
+                .new
+                .as_deref()
+                .and_then(|content| self.highlight_content(path, content));
+            highlighted = old.as_ref().map_or(0, Vec::len) + new.as_ref().map_or(0, Vec::len);
+            self.apply_full_file_spans(file, old.as_deref(), new.as_deref());
+        }
+        mark_all_complete(file);
+        highlighted
+    }
+
+    fn highlight_content(&self, path: &Path, content: &str) -> Option<HighlightedLines> {
+        let lines: Vec<String> = content.lines().map(tabify).collect();
+        self.highlight_file_lines(path, &lines)
+    }
+
+    fn apply_full_file_spans(
+        &self,
+        file: &mut DiffFile,
+        old_highlight: Option<&[Option<HighlightedSpans>]>,
+        new_highlight: Option<&[Option<HighlightedSpans>]>,
+    ) {
+        for hunk in &mut file.hunks {
+            for line in &mut hunk.lines {
+                let old_idx = line.old_lineno.map(|n| n.saturating_sub(1) as usize);
+                let new_idx = line.new_lineno.map(|n| n.saturating_sub(1) as usize);
+                let spans = self.highlighted_line_for_diff_with_background(
+                    old_highlight,
+                    new_highlight,
+                    old_idx,
+                    new_idx,
+                    line.origin,
+                );
+                if spans.is_some() {
+                    line.highlighted_spans = spans;
+                }
+            }
         }
     }
 
@@ -163,27 +434,29 @@ impl SyntaxHighlighter {
             highlighter
                 .highlight_line(&format!("{}\n", line), &self.syntax_set)
                 .ok()
-                .map(|ranges| {
-                    let mut spans: Vec<(Style, String)> = ranges
-                        .into_iter()
-                        .map(|(style, text)| {
-                            (Self::syntect_to_ratatui_style(style), text.to_string())
-                        })
-                        .collect();
-                    // Strip trailing \n that syntect includes from the input.
-                    // Leaving it causes ratatui to allocate an extra buffer cell,
-                    // misaligning side-by-side diff columns on short (padded) lines.
-                    if let Some(last) = spans.last_mut()
-                        && last.1.ends_with('\n')
-                    {
-                        last.1.truncate(last.1.len() - 1);
-                        if last.1.is_empty() {
-                            spans.pop();
-                        }
-                    }
-                    spans
-                })
+                .map(Self::ranges_to_spans)
         })
+    }
+
+    /// Convert syntect's styled ranges for one line into owned ratatui spans.
+    ///
+    /// Strips the trailing `\n` that syntect includes from the input. Leaving
+    /// it causes ratatui to allocate an extra buffer cell, misaligning
+    /// side-by-side diff columns on short (padded) lines.
+    fn ranges_to_spans(ranges: Vec<(syntect::highlighting::Style, &str)>) -> HighlightedSpans {
+        let mut spans: HighlightedSpans = ranges
+            .into_iter()
+            .map(|(style, text)| (Self::syntect_to_ratatui_style(style), text.to_string()))
+            .collect();
+        if let Some(last) = spans.last_mut()
+            && last.1.ends_with('\n')
+        {
+            last.1.truncate(last.1.len() - 1);
+            if last.1.is_empty() {
+                spans.pop();
+            }
+        }
+        spans
     }
 
     fn collect_line_highlights<F>(lines: &[String], mut highlight_line: F) -> HighlightedLines
@@ -204,51 +477,6 @@ impl SyntaxHighlighter {
         line_idx
             .and_then(|idx| highlighted_lines.and_then(|all| all.get(idx)))
             .and_then(|line_highlight| line_highlight.as_ref().cloned())
-    }
-
-    pub(crate) fn split_diff_lines_for_highlighting(
-        line_contents: &[String],
-        line_origins: &[LineOrigin],
-    ) -> DiffHighlightSequences {
-        debug_assert_eq!(line_contents.len(), line_origins.len());
-
-        let mut old_lines = Vec::new();
-        let mut new_lines = Vec::new();
-        let mut old_line_indices = Vec::with_capacity(line_origins.len());
-        let mut new_line_indices = Vec::with_capacity(line_origins.len());
-
-        for (content, origin) in line_contents.iter().zip(line_origins.iter()) {
-            match origin {
-                LineOrigin::Context => {
-                    let old_idx = old_lines.len();
-                    old_lines.push(content.clone());
-                    old_line_indices.push(Some(old_idx));
-
-                    let new_idx = new_lines.len();
-                    new_lines.push(content.clone());
-                    new_line_indices.push(Some(new_idx));
-                }
-                LineOrigin::Addition => {
-                    let new_idx = new_lines.len();
-                    new_lines.push(content.clone());
-                    old_line_indices.push(None);
-                    new_line_indices.push(Some(new_idx));
-                }
-                LineOrigin::Deletion => {
-                    let old_idx = old_lines.len();
-                    old_lines.push(content.clone());
-                    old_line_indices.push(Some(old_idx));
-                    new_line_indices.push(None);
-                }
-            }
-        }
-
-        DiffHighlightSequences {
-            old_lines,
-            new_lines,
-            old_line_indices,
-            new_line_indices,
-        }
     }
 
     pub(crate) fn highlighted_line_for_diff_with_background(
@@ -410,19 +638,79 @@ impl SyntaxHighlighter {
     }
 }
 
+fn mark_all_complete(file: &mut DiffFile) {
+    for hunk in &mut file.hunks {
+        hunk.highlight.mark_complete();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::diff_types::{DiffLine, FileStatus, WholeFileText};
+    use std::path::PathBuf;
 
-    #[test]
-    fn should_resolve_no_syntax_for_any_path() {
-        let plain = SyntaxHighlighter::plain();
-        assert!(
-            plain
-                .highlight_file_lines(Path::new("a.rs"), &["fn main() {}".to_string()])
-                .is_none(),
-            "plain highlighter must not resolve a syntax, or the probe is not cheap"
-        );
+    fn diff_line(
+        origin: LineOrigin,
+        content: &str,
+        old: Option<u32>,
+        new: Option<u32>,
+    ) -> DiffLine {
+        DiffLine {
+            origin,
+            content: content.to_string(),
+            old_lineno: old,
+            new_lineno: new,
+            highlighted_spans: None,
+        }
+    }
+
+    fn hunk(lines: Vec<DiffLine>) -> DiffHunk {
+        let n = lines.len() as u32;
+        DiffHunk {
+            header: format!("@@ -1,{n} +1,{n} @@"),
+            lines,
+            old_start: 1,
+            old_count: n,
+            new_start: 1,
+            new_count: n,
+            highlight: HunkHighlight::default(),
+        }
+    }
+
+    fn file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        DiffFile {
+            old_path: Some(PathBuf::from(path)),
+            new_path: Some(PathBuf::from(path)),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash: 0,
+            whole_file_text: None,
+        }
+    }
+
+    fn rust_lines(n: usize) -> Vec<DiffLine> {
+        (0..n)
+            .map(|i| {
+                let ln = i as u32 + 1;
+                match i % 3 {
+                    0 => diff_line(LineOrigin::Context, "fn main() {", Some(ln), Some(ln)),
+                    1 => diff_line(LineOrigin::Deletion, "    let x = 1;", Some(ln), None),
+                    _ => diff_line(LineOrigin::Addition, "    let y = \"s\";", None, Some(ln)),
+                }
+            })
+            .collect()
+    }
+
+    fn distinct_fg_count(spans: &HighlightedSpans) -> usize {
+        spans
+            .iter()
+            .filter_map(|(s, _)| s.fg)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
     }
 
     #[test]
@@ -595,28 +883,6 @@ mod tests {
     }
 
     #[test]
-    fn split_diff_lines_for_highlighting_should_build_old_and_new_sequences() {
-        let contents = vec![
-            "ctx".to_string(),
-            "del".to_string(),
-            "add".to_string(),
-            "ctx2".to_string(),
-        ];
-        let origins = vec![
-            LineOrigin::Context,
-            LineOrigin::Deletion,
-            LineOrigin::Addition,
-            LineOrigin::Context,
-        ];
-
-        let seq = SyntaxHighlighter::split_diff_lines_for_highlighting(&contents, &origins);
-        assert_eq!(seq.old_lines, vec!["ctx", "del", "ctx2"]);
-        assert_eq!(seq.new_lines, vec!["ctx", "add", "ctx2"]);
-        assert_eq!(seq.old_line_indices, vec![Some(0), Some(1), None, Some(2)]);
-        assert_eq!(seq.new_line_indices, vec![Some(0), None, Some(1), Some(2)]);
-    }
-
-    #[test]
     fn highlighted_line_for_diff_with_background_should_handle_none_per_line() {
         let highlighter = SyntaxHighlighter::default();
         let old_lines = vec![None];
@@ -702,5 +968,293 @@ mod tests {
                 "line {i} spans should not contain newline, got: {full_text:?}"
             );
         }
+    }
+
+    #[test]
+    fn advance_hunk_should_stop_at_the_requested_line_and_resume() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = file("a.rs", vec![hunk(rust_lines(9))]);
+
+        let processed = highlighter.advance_file(&mut states, &mut f, 0, 3, usize::MAX);
+        assert_eq!(processed, 4);
+        let h = &f.hunks[0];
+        assert!(h.highlight.covers(3));
+        assert!(!h.highlight.covers(4));
+        assert!(!h.highlight.is_complete());
+        assert!(h.lines[..4].iter().all(|l| l.highlighted_spans.is_some()));
+        assert!(h.lines[4..].iter().all(|l| l.highlighted_spans.is_none()));
+
+        let processed = highlighter.advance_file(&mut states, &mut f, 0, usize::MAX, usize::MAX);
+        assert_eq!(processed, 5);
+        let h = &f.hunks[0];
+        assert!(h.highlight.is_complete());
+        assert!(h.lines.iter().all(|l| l.highlighted_spans.is_some()));
+    }
+
+    #[test]
+    fn advance_hunk_should_honor_the_line_budget() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = file("a.rs", vec![hunk(rust_lines(9))]);
+
+        assert_eq!(highlighter.advance_file(&mut states, &mut f, 0, 8, 2), 2);
+        assert!(f.hunks[0].highlight.covers(1));
+        assert!(!f.hunks[0].highlight.covers(2));
+        assert_eq!(highlighter.advance_file(&mut states, &mut f, 0, 8, 100), 7);
+        assert!(f.hunks[0].highlight.is_complete());
+        assert_eq!(highlighter.advance_file(&mut states, &mut f, 0, 8, 100), 0);
+    }
+
+    #[test]
+    fn state_table_should_only_hold_hunks_in_progress() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = file("a.rs", vec![hunk(rust_lines(6))]);
+
+        highlighter.advance_file(&mut states, &mut f, 0, 2, usize::MAX);
+        assert_eq!(states.len(), 1);
+        highlighter.advance_file(&mut states, &mut f, 0, usize::MAX, usize::MAX);
+        assert_eq!(states.len(), 0, "a completed hunk keeps no parser state");
+    }
+
+    #[test]
+    fn clone_with_stale_state_should_restart_and_still_match() {
+        // A clone shares the original's state id. Once the original advances,
+        // the entry is gone (or out of step), so the clone must start over
+        // rather than continue from a state that belongs to different lines.
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let lines = vec![
+            diff_line(LineOrigin::Context, "/* start", Some(1), Some(1)),
+            diff_line(LineOrigin::Context, "   still comment", Some(2), Some(2)),
+            diff_line(LineOrigin::Context, "   end */", Some(3), Some(3)),
+            diff_line(LineOrigin::Context, "fn f() {}", Some(4), Some(4)),
+        ];
+        let mut original = file("a.rs", vec![hunk(lines.clone())]);
+        highlighter.advance_file(&mut states, &mut original, 0, 1, usize::MAX);
+        let mut clone = original.clone();
+        highlighter.advance_file(&mut states, &mut original, 0, usize::MAX, usize::MAX);
+
+        let processed =
+            highlighter.advance_file(&mut states, &mut clone, 0, usize::MAX, usize::MAX);
+        assert_eq!(processed, 4, "the clone restarts from its first line");
+
+        let mut reference = file("a.rs", vec![hunk(lines)]);
+        highlighter.advance_file(&mut states, &mut reference, 0, usize::MAX, usize::MAX);
+        for (a, b) in clone.hunks[0].lines.iter().zip(&reference.hunks[0].lines) {
+            assert_eq!(a.highlighted_spans, b.highlighted_spans, "{:?}", a.content);
+        }
+        assert_eq!(states.len(), 0);
+    }
+
+    #[test]
+    fn incremental_highlighting_should_match_one_shot_highlighting() {
+        // A hunk advanced in slices must produce the same spans as one advanced
+        // in a single call: the parser state carried between slices is the
+        // whole point.
+        let highlighter = SyntaxHighlighter::default();
+        let lines = vec![
+            diff_line(LineOrigin::Context, "/* start", Some(1), Some(1)),
+            diff_line(LineOrigin::Deletion, "   still comment", Some(2), None),
+            diff_line(LineOrigin::Addition, "   also comment", None, Some(2)),
+            diff_line(LineOrigin::Context, "   end */", Some(3), Some(3)),
+            diff_line(LineOrigin::Context, "fn f() {}", Some(4), Some(4)),
+        ];
+        let mut states = HunkStates::default();
+        let mut sliced = file("a.rs", vec![hunk(lines.clone())]);
+        let mut whole = file("a.rs", vec![hunk(lines)]);
+
+        for upto in 0..5 {
+            highlighter.advance_file(&mut states, &mut sliced, 0, upto, 1);
+        }
+        highlighter.advance_file(&mut states, &mut whole, 0, usize::MAX, usize::MAX);
+
+        for (a, b) in sliced.hunks[0].lines.iter().zip(&whole.hunks[0].lines) {
+            assert_eq!(a.highlighted_spans, b.highlighted_spans, "{:?}", a.content);
+        }
+        // The block comment spans lines, so the closing line must have been
+        // recognised as a comment rather than code.
+        let closing = whole.hunks[0].lines[3].highlighted_spans.as_ref().unwrap();
+        let code = whole.hunks[0].lines[4].highlighted_spans.as_ref().unwrap();
+        assert_ne!(closing[0].0.fg, code[0].0.fg);
+    }
+
+    #[test]
+    fn diff_backgrounds_should_follow_line_origin() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut f = file("a.rs", vec![hunk(rust_lines(3))]);
+        highlighter.highlight_files_fully(std::slice::from_mut(&mut f));
+        let lines = &f.hunks[0].lines;
+        assert!(
+            lines[0]
+                .highlighted_spans
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|(s, _)| s.bg.is_none())
+        );
+        assert!(
+            lines[1]
+                .highlighted_spans
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|(s, _)| s.bg == Some(highlighter.del_bg))
+        );
+        assert!(
+            lines[2]
+                .highlighted_spans
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|(s, _)| s.bg == Some(highlighter.add_bg))
+        );
+    }
+
+    #[test]
+    fn unknown_syntax_should_complete_without_spans() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = file(
+            "notes.unknownext",
+            vec![hunk(vec![diff_line(
+                LineOrigin::Context,
+                "hello",
+                Some(1),
+                Some(1),
+            )])],
+        );
+        assert_eq!(
+            highlighter.advance_file(&mut states, &mut f, 0, 0, usize::MAX),
+            0
+        );
+        assert!(f.hunks[0].highlight.is_complete());
+        assert!(f.hunks[0].lines[0].highlighted_spans.is_none());
+    }
+
+    #[test]
+    fn shebang_should_pick_the_syntax_for_extensionless_hunks() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut f = file(
+            "script",
+            vec![hunk(vec![
+                diff_line(LineOrigin::Addition, "#!/usr/bin/env python", None, Some(1)),
+                diff_line(LineOrigin::Addition, "print('hello')", None, Some(2)),
+            ])],
+        );
+        highlighter.highlight_files_fully(std::slice::from_mut(&mut f));
+        assert!(
+            f.hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.highlighted_spans.is_some())
+        );
+    }
+
+    #[test]
+    fn commit_message_files_should_never_be_highlighted() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut f = file(
+            "Commit Message (abc)",
+            vec![hunk(vec![diff_line(
+                LineOrigin::Context,
+                "#!/bin/sh fix",
+                None,
+                Some(1),
+            )])],
+        );
+        f.is_commit_message = true;
+        highlighter.highlight_files_fully(std::slice::from_mut(&mut f));
+        assert!(f.hunks[0].highlight.is_complete());
+        assert!(f.hunks[0].lines[0].highlighted_spans.is_none());
+    }
+
+    fn vue_file(deleted: &str, added: &str, target_line: u32) -> DiffFile {
+        let h = DiffHunk {
+            header: format!("@@ -{target_line} +{target_line} @@"),
+            lines: vec![
+                diff_line(LineOrigin::Deletion, deleted, Some(target_line), None),
+                diff_line(LineOrigin::Addition, added, None, Some(target_line)),
+            ],
+            old_start: target_line,
+            old_count: 1,
+            new_start: target_line,
+            new_count: 1,
+            highlight: HunkHighlight::default(),
+        };
+        file("Comp.vue", vec![h])
+    }
+
+    const VUE_OLD: &str = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\n\
+                           import { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
+    const VUE_NEW: &str = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\n\
+                           import { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
+
+    #[test]
+    fn container_files_should_highlight_from_whole_file_text() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = vue_file("const msg = ref('hi')", "const msg = ref('hello')", 7);
+        f.whole_file_text = Some(WholeFileText {
+            old: Some(VUE_OLD.to_string()),
+            new: Some(VUE_NEW.to_string()),
+        });
+
+        let highlighted = highlighter.advance_file(&mut states, &mut f, 0, 0, 1);
+        assert_eq!(highlighted, 18, "both sides of the nine-line file");
+        assert!(f.whole_file_text.is_none(), "text is dropped once used");
+        assert!(f.hunks[0].highlight.is_complete());
+        for line in &f.hunks[0].lines {
+            let spans = line
+                .highlighted_spans
+                .as_ref()
+                .unwrap_or_else(|| panic!("vue line should be highlighted: {line:?}"));
+            assert!(
+                distinct_fg_count(spans) >= 2,
+                "vue line {line:?} should have varied fg colors"
+            );
+        }
+        let deletion = f.hunks[0].lines[0].highlighted_spans.as_ref().unwrap();
+        assert!(
+            deletion
+                .iter()
+                .all(|(s, _)| s.bg == Some(highlighter.del_bg))
+        );
+    }
+
+    #[test]
+    fn container_files_without_text_should_complete_without_spans() {
+        // Per-hunk highlighting of a container grammar would paint every line
+        // in the theme's default foreground, which reads worse than the plain
+        // diff colours, so a file whose text could not be fetched stays plain.
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = vue_file("const msg = ref('hi')", "const msg = ref('hello')", 7);
+        assert_eq!(
+            highlighter.advance_file(&mut states, &mut f, 0, 0, usize::MAX),
+            0
+        );
+        assert!(f.hunks[0].highlight.is_complete());
+        assert!(
+            f.hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.highlighted_spans.is_none())
+        );
+    }
+
+    #[test]
+    fn container_files_should_keep_lines_whose_side_is_missing_plain() {
+        let highlighter = SyntaxHighlighter::default();
+        let mut states = HunkStates::default();
+        let mut f = vue_file("const msg = ref('hi')", "const msg = ref('hello')", 7);
+        f.whole_file_text = Some(WholeFileText {
+            old: None,
+            new: Some(VUE_NEW.to_string()),
+        });
+        highlighter.advance_file(&mut states, &mut f, 0, 0, usize::MAX);
+        assert!(f.hunks[0].lines[0].highlighted_spans.is_none());
+        assert!(f.hunks[0].lines[1].highlighted_spans.is_some());
     }
 }

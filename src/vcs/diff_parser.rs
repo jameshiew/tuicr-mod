@@ -14,31 +14,25 @@ use crate::error::{Result, TuicrError};
 #[cfg(test)]
 use crate::model::FileStatus;
 use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineOrigin};
-use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::syntax::HunkHighlight;
 
 /// Convert backend-structured file patches into renderable diff files.
-pub fn parse_file_patches(
-    patches: Vec<FilePatch>,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffFile>> {
+pub fn parse_file_patches(patches: Vec<FilePatch>) -> Result<Vec<DiffFile>> {
     if patches.is_empty() {
         return Err(TuicrError::NoChanges);
     }
 
-    patches
-        .into_iter()
-        .map(|patch| materialize_file_patch(patch, highlighter))
-        .collect()
+    patches.into_iter().map(materialize_file_patch).collect()
 }
 
-fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> Result<DiffFile> {
+fn materialize_file_patch(patch: FilePatch) -> Result<DiffFile> {
     let file_path = patch.display_path().ok_or_else(|| {
         TuicrError::VcsCommand("structured diff entry has neither an old nor a new path".into())
     })?;
     let hunks = if patch.is_binary || patch.is_too_large {
         Vec::new()
     } else {
-        parse_hunks(&patch.patch, file_path, highlighter)?
+        parse_hunks(&patch.patch, file_path)?
     };
     let content_hash = DiffFile::compute_content_hash(&hunks);
 
@@ -50,22 +44,19 @@ fn materialize_file_patch(patch: FilePatch, highlighter: &SyntaxHighlighter) -> 
         is_binary: patch.is_binary,
         is_too_large: patch.is_too_large,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     })
 }
 
-fn parse_hunks(
-    patch: &str,
-    file_path: &Path,
-    highlighter: &SyntaxHighlighter,
-) -> Result<Vec<DiffHunk>> {
+fn parse_hunks(patch: &str, file_path: &Path) -> Result<Vec<DiffHunk>> {
     let mut hunks = Vec::new();
     let mut lines = patch.lines().peekable();
     let mut parsed_hunk = false;
 
     while let Some(line) = lines.next() {
         if line.starts_with("@@ ") {
-            hunks.push(parse_hunk(line, &mut lines, file_path, highlighter)?);
+            hunks.push(parse_hunk(line, &mut lines, file_path)?);
             parsed_hunk = true;
         } else if line.starts_with("@@") {
             return Err(invalid_patch(
@@ -90,7 +81,6 @@ fn parse_hunk<'a, I>(
     header: &str,
     lines: &mut std::iter::Peekable<I>,
     file_path: &Path,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<DiffHunk>
 where
     I: Iterator<Item = &'a str>,
@@ -104,9 +94,7 @@ where
         ));
     }
 
-    let mut line_contents = Vec::new();
-    let mut line_origins = Vec::new();
-    let mut line_numbers = Vec::new();
+    let mut lines_out = Vec::new();
     let mut old_lineno = old_start;
     let mut new_lineno = new_start;
     let mut old_remaining = old_count;
@@ -179,52 +167,23 @@ where
             ));
         };
 
-        line_contents.push(super::tabify(content));
-        line_origins.push(origin);
-        line_numbers.push((old_ln, new_ln));
+        lines_out.push(DiffLine {
+            origin,
+            content: super::tabify(content),
+            old_lineno: old_ln,
+            new_lineno: new_ln,
+            highlighted_spans: None,
+        });
     }
-
-    let highlight_sequences =
-        SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-    let (old_highlighted_lines, new_highlighted_lines) = if !needs_full_file_highlight(file_path) {
-        (
-            highlighter.highlight_file_lines(file_path, &highlight_sequences.old_lines),
-            highlighter.highlight_file_lines(file_path, &highlight_sequences.new_lines),
-        )
-    } else {
-        (None, None)
-    };
-
-    let lines = line_contents
-        .into_iter()
-        .enumerate()
-        .map(|(index, content)| {
-            let origin = line_origins[index];
-            let (old_lineno, new_lineno) = line_numbers[index];
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                old_highlighted_lines.as_deref(),
-                new_highlighted_lines.as_deref(),
-                highlight_sequences.old_line_indices[index],
-                highlight_sequences.new_line_indices[index],
-                origin,
-            );
-            DiffLine {
-                origin,
-                content,
-                old_lineno,
-                new_lineno,
-                highlighted_spans,
-            }
-        })
-        .collect();
 
     Ok(DiffHunk {
         header: header.to_string(),
-        lines,
+        lines: lines_out,
         old_start,
         old_count,
         new_start,
         new_count,
+        highlight: HunkHighlight::default(),
     })
 }
 
@@ -265,21 +224,18 @@ mod tests {
     use super::*;
 
     fn parse(patch: &str) -> Result<Vec<DiffFile>> {
-        parse_file_patches(
-            vec![FilePatch::new(
-                Some(PathBuf::from("file.txt")),
-                Some(PathBuf::from("file.txt")),
-                FileStatus::Modified,
-                patch,
-            )],
-            &SyntaxHighlighter::default(),
-        )
+        parse_file_patches(vec![FilePatch::new(
+            Some(PathBuf::from("file.txt")),
+            Some(PathBuf::from("file.txt")),
+            FileStatus::Modified,
+            patch,
+        )])
     }
 
     #[test]
     fn returns_no_changes_for_empty_patch_set() {
         assert!(matches!(
-            parse_file_patches(Vec::new(), &SyntaxHighlighter::default()),
+            parse_file_patches(Vec::new()),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -294,15 +250,12 @@ mod tests {
 +new
 "#;
         let expected = PathBuf::from("日.txt");
-        let files = parse_file_patches(
-            vec![FilePatch::new(
-                Some(expected.clone()),
-                Some(expected.clone()),
-                FileStatus::Modified,
-                patch,
-            )],
-            &SyntaxHighlighter::default(),
-        )
+        let files = parse_file_patches(vec![FilePatch::new(
+            Some(expected.clone()),
+            Some(expected.clone()),
+            FileStatus::Modified,
+            patch,
+        )])
         .unwrap();
 
         assert_eq!(files[0].old_path.as_ref(), Some(&expected));
@@ -401,7 +354,7 @@ mod tests {
         );
         large.is_too_large = true;
 
-        let files = parse_file_patches(vec![binary, large], &SyntaxHighlighter::default()).unwrap();
+        let files = parse_file_patches(vec![binary, large]).unwrap();
         assert!(files[0].is_binary);
         assert!(files[0].hunks.is_empty());
         assert!(files[1].is_too_large);

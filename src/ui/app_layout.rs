@@ -17,6 +17,8 @@ const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Only a frame that draws the diff view can leave highlighting unfinished.
+    app.highlight_pending = false;
     frame.render_widget(
         Block::default().style(styles::panel_style(&app.theme)),
         frame.area(),

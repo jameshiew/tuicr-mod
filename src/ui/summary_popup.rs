@@ -348,7 +348,6 @@ mod tests {
         CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineRange,
         ReviewSession, SessionDiffSource,
     };
-    use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::vcs::traits::{CommitInfo, VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
 
@@ -361,7 +360,7 @@ mod tests {
             &self.info
         }
 
-        fn get_working_tree_diff(&self, _h: &SyntaxHighlighter) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<Vec<DiffFile>> {
             Err(TuicrError::NoChanges)
         }
 
@@ -443,6 +442,7 @@ mod tests {
             old_count: count,
             new_start: start,
             new_count: count,
+            highlight: Default::default(),
         }
     }
 
@@ -456,6 +456,7 @@ mod tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         }
     }

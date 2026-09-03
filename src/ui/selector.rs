@@ -198,7 +198,6 @@ mod selector_render_snapshot_tests {
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
-    use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
     use crate::vcs::CommitInfo;
@@ -219,10 +218,7 @@ mod selector_render_snapshot_tests {
             &self.info
         }
 
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<Vec<DiffFile>> {
             Err(TuicrError::NoChanges)
         }
 

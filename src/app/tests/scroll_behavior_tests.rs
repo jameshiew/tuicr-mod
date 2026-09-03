@@ -12,7 +12,7 @@ impl VcsBackend for DummyVcs {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         Err(TuicrError::NoChanges)
     }
 
@@ -59,6 +59,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
         old_count: n as u32,
         new_start: 1,
         new_count: n as u32,
+        highlight: Default::default(),
     };
 
     let file = DiffFile {
@@ -69,6 +70,7 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash: 0,
     };
 

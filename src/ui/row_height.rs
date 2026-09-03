@@ -306,7 +306,6 @@ mod tests {
         Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide,
         ReviewSession, SessionDiffSource,
     };
-    use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::vcs::traits::{VcsBackend, VcsChangeStatus, VcsInfo, VcsType};
     use ratatui::Terminal;
@@ -321,10 +320,7 @@ mod tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<Vec<DiffFile>> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(
@@ -407,6 +403,7 @@ mod tests {
             old_count: 2,
             new_start: 30,
             new_count: 3,
+            highlight: Default::default(),
         };
         let hunk2 = DiffHunk {
             header: "@@ -100,1 +100,1 @@ fn bar".to_string(),
@@ -421,6 +418,7 @@ mod tests {
             old_count: 1,
             new_start: 100,
             new_count: 1,
+            highlight: Default::default(),
         };
         let hunks = vec![hunk1, hunk2];
         let content_hash = DiffFile::compute_content_hash(&hunks);
@@ -432,6 +430,7 @@ mod tests {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         }
     }
@@ -445,6 +444,7 @@ mod tests {
             is_binary: true,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash: 0,
         }
     }

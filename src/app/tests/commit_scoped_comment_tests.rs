@@ -10,7 +10,7 @@ impl VcsBackend for DummyVcs {
     fn info(&self) -> &VcsInfo {
         &self.info
     }
-    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         Err(TuicrError::NoChanges)
     }
     fn fetch_context_lines(

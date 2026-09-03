@@ -17,7 +17,6 @@ struct ScriptedVcs {
     working_tree_diff_calls: Arc<AtomicUsize>,
     /// One entry per fetch: whether that call was handed a highlighter with no
     /// grammars loaded. Lets a test check which fetch got the cheap parse.
-    grammar_counts: Arc<Mutex<Vec<usize>>>,
     commit_range_diff_results: RefCell<VecDeque<Result<Vec<DiffFile>>>>,
     /// The commit ids each `get_commit_range_diff` call was asked for, in
     /// call order, so a test can tell a narrowed subrange fetch apart from a
@@ -35,7 +34,6 @@ impl ScriptedVcs {
             info,
             working_tree_diff_results: RefCell::new(VecDeque::new()),
             working_tree_diff_calls: Arc::new(AtomicUsize::new(0)),
-            grammar_counts: Arc::new(Mutex::new(Vec::new())),
             commit_range_diff_results: RefCell::new(VecDeque::new()),
             commit_range_diff_ids: Arc::new(Mutex::new(Vec::new())),
         }
@@ -65,10 +63,6 @@ impl ScriptedVcs {
     }
 
     /// A handle to the per-call grammar counts, readable after the same move.
-    fn grammar_counts(&self) -> Arc<Mutex<Vec<usize>>> {
-        Arc::clone(&self.grammar_counts)
-    }
-
     /// A handle to the per-call commit ids seen by `get_commit_range_diff`,
     /// readable after the mock has been moved into `App`.
     fn commit_range_diff_ids(&self) -> Arc<Mutex<Vec<Vec<String>>>> {
@@ -81,12 +75,8 @@ impl VcsBackend for ScriptedVcs {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         self.working_tree_diff_calls.fetch_add(1, Ordering::SeqCst);
-        self.grammar_counts
-            .lock()
-            .expect("grammar counts poisoned")
-            .push(highlighter.syntax_set.syntaxes().len());
         self.working_tree_diff_results
             .borrow_mut()
             .pop_front()
@@ -96,7 +86,6 @@ impl VcsBackend for ScriptedVcs {
     fn get_commit_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,
-        _highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         self.commit_range_diff_ids
             .lock()
@@ -173,6 +162,7 @@ fn make_diff_file(path: &str, status: FileStatus, content_hash: u64) -> DiffFile
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     }
 }
@@ -240,8 +230,6 @@ fn should_return_fetched_files_when_diff_changed() {
     let initial = vec![make_diff_file("a.rs", FileStatus::Modified, 1)];
     let changed = vec![make_diff_file("a.rs", FileStatus::Modified, 2)];
     let vcs = ScriptedVcs::new();
-    // The probe and the real fetch each consume one scripted response.
-    vcs.push_working_tree_diff(Ok(changed.clone()));
     vcs.push_working_tree_diff(Ok(changed));
     let app = build_app_with_scripted_vcs(initial, vcs);
 
@@ -255,10 +243,9 @@ fn should_return_fetched_files_when_diff_changed() {
     assert_eq!(files[0].content_hash, 2);
 }
 
-/// An unchanged tick must cost exactly one backend fetch, the cheap probe. A
-/// second fetch means the expensive path ran anyway and the gate saved nothing.
+/// An unchanged tick must cost exactly one backend fetch.
 #[test]
-fn should_fetch_once_when_probe_finds_no_change() {
+fn should_fetch_once_when_nothing_changed() {
     let files = vec![
         make_diff_file("a.rs", FileStatus::Modified, 1),
         make_diff_file("b.rs", FileStatus::Modified, 2),
@@ -277,18 +264,17 @@ fn should_fetch_once_when_probe_finds_no_change() {
     assert_eq!(
         counter.load(Ordering::SeqCst),
         1,
-        "unchanged tick must cost one cheap probe, not a second full fetch"
+        "unchanged tick must cost exactly one fetch"
     );
 }
 
-/// A change must cost two fetches: the cheap probe that detects it, then the
-/// highlighted fetch that gets applied.
+/// A change costs one fetch too: backends no longer highlight, so the fetch
+/// that detects the change is the one that gets applied.
 #[test]
-fn should_fetch_twice_when_probe_finds_a_change() {
+fn should_fetch_once_when_diff_changed() {
     let initial = vec![make_diff_file("a.rs", FileStatus::Modified, 1)];
     let changed = vec![make_diff_file("a.rs", FileStatus::Modified, 2)];
     let vcs = ScriptedVcs::new();
-    vcs.push_working_tree_diff(Ok(changed.clone()));
     vcs.push_working_tree_diff(Ok(changed));
     let counter = vcs.call_counter();
     let app = build_app_with_scripted_vcs(initial, vcs);
@@ -301,36 +287,8 @@ fn should_fetch_twice_when_probe_finds_a_change() {
     assert_eq!(files[0].content_hash, 2);
     assert_eq!(
         counter.load(Ordering::SeqCst),
-        2,
-        "a changed tick pays probe plus real fetch"
-    );
-}
-
-/// The probe only saves anything if it runs against a highlighter with no
-/// grammars. Swapping it for the real one leaves every other test in this file
-/// passing, because the call counts and the returned diff are unchanged, while
-/// the gate quietly costs a full highlight pass on every tick.
-#[test]
-fn should_probe_with_a_grammar_free_highlighter_then_fetch_with_the_real_one() {
-    let initial = vec![make_diff_file("a.rs", FileStatus::Modified, 1)];
-    let changed = vec![make_diff_file("a.rs", FileStatus::Modified, 2)];
-    let vcs = ScriptedVcs::new();
-    vcs.push_working_tree_diff(Ok(changed.clone()));
-    vcs.push_working_tree_diff(Ok(changed));
-    let grammars = vcs.grammar_counts();
-    let app = build_app_with_scripted_vcs(initial, vcs);
-
-    app.fetch_changed_diff_files()
-        .expect("fetch should succeed")
-        .expect("expected Some(files) since content_hash changed");
-
-    let counts = grammars.lock().expect("grammar counts poisoned");
-    assert_eq!(counts.len(), 2, "expected a probe fetch and a real fetch");
-    assert_eq!(counts[0], 0, "the probe must load no grammars");
-    assert!(
-        counts[1] > 0,
-        "the applied fetch must use the real highlighter, got {} grammars",
-        counts[1]
+        1,
+        "a changed tick pays a single fetch"
     );
 }
 
@@ -419,6 +377,6 @@ fn should_fetch_changed_diff_files_keeping_narrowed_commit_selection() {
             .expect("commit ids poisoned")
             .as_slice(),
         [vec!["c3".to_string()]],
-        "diff-watch's probe fetch must use the narrowed selection, not the full commit range"
+        "diff-watch's fetch must use the narrowed selection, not the full commit range"
     );
 }

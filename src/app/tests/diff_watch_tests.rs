@@ -21,7 +21,7 @@ impl VcsBackend for StubVcs {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         panic!("diff watch must not fetch through self.vcs; it opens its own backend")
     }
 
@@ -92,6 +92,7 @@ fn make_diff_file(path: &str, content_hash: u64) -> DiffFile {
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     }
 }
@@ -114,6 +115,7 @@ fn make_hunk(new_start: u32, new_count: u32) -> DiffHunk {
         old_count: new_count,
         new_start,
         new_count,
+        highlight: Default::default(),
     }
 }
 
@@ -127,6 +129,7 @@ fn make_file_with_hunks(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     }
 }

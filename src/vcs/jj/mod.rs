@@ -9,7 +9,6 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{FileMetadata, pair_metadata_with_patch};
 use crate::vcs::traits::{
@@ -17,7 +16,7 @@ use crate::vcs::traits::{
     VcsType,
 };
 use crate::vcs::{
-    BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+    BATCH_BOUNDARY, attach_container_whole_file_text, parse_batched_files, slice_context_lines,
 };
 
 /// Parse a jj description into (summary, optional body).
@@ -139,11 +138,7 @@ impl JjBackend {
         Cow::Owned(args_with_whitespace)
     }
 
-    fn load_diff(
-        &self,
-        diff_args: &[&str],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn load_diff(&self, diff_args: &[&str]) -> Result<Vec<DiffFile>> {
         let args = self.diff_args(diff_args);
         let mut metadata_args: Vec<&str> = args.iter().copied().collect();
         metadata_args.extend(["-T", JJ_DIFF_METADATA_TEMPLATE]);
@@ -160,7 +155,7 @@ impl JjBackend {
         patch_args.extend(["--git", "--ignore-working-copy"]);
         let patch = run_jj_command(&self.info.root_path, patch_args)?;
         let patches = pair_metadata_with_patch(metadata, patch.as_bytes())?;
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 
@@ -210,14 +205,13 @@ impl VcsBackend for JjBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let mut files = self.load_diff(&["diff"], highlighter)?;
-        apply_container_full_file_highlight(
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
+        let mut files = self.load_diff(&["diff"])?;
+        attach_container_whole_file_text(
             &self.info.root_path,
             "@-",
             None,
             &mut files,
-            highlighter,
             jj_show_batch,
         )?;
         Ok(files)
@@ -366,7 +360,6 @@ impl VcsBackend for JjBackend {
     fn get_commit_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         let commit_ids = &revision_range.commit_ids;
         if commit_ids.is_empty() {
@@ -381,13 +374,12 @@ impl VcsBackend for JjBackend {
         // In jj, we use {commit}- to get the parent(s)
         let from_rev = format!("{}-", oldest);
         let diff_args = ["diff", "--from", &from_rev, "--to", newest];
-        let mut files = self.load_diff(&diff_args, highlighter)?;
-        apply_container_full_file_highlight(
+        let mut files = self.load_diff(&diff_args)?;
+        attach_container_whole_file_text(
             &self.info.root_path,
             &from_rev,
             Some(newest),
             &mut files,
-            highlighter,
             jj_show_batch,
         )?;
         Ok(files)
@@ -444,11 +436,7 @@ impl VcsBackend for JjBackend {
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -459,13 +447,12 @@ impl VcsBackend for JjBackend {
         // Diff from the parent of the oldest commit to the working copy (@)
         let from_rev = format!("{}-", oldest);
         let diff_args = ["diff", "--from", &from_rev, "--to", "@"];
-        let mut files = self.load_diff(&diff_args, highlighter)?;
-        apply_container_full_file_highlight(
+        let mut files = self.load_diff(&diff_args)?;
+        attach_container_whole_file_text(
             &self.info.root_path,
             &from_rev,
             None,
             &mut files,
-            highlighter,
             jj_show_batch,
         )?;
         Ok(files)
@@ -700,9 +687,7 @@ mod tests {
         assert_eq!(backend.info().root_path, expected_path);
         assert_eq!(backend.info().vcs_type, VcsType::Jujutsu);
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -731,7 +716,7 @@ mod tests {
         let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create jj backend");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("structured jj diff should parse");
 
         assert_eq!(files.len(), 1);
@@ -752,7 +737,7 @@ mod tests {
                 .expect("Failed to create jj backend");
 
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("whitespace-only edit may surface as a no-op diff file");
         assert_eq!(files.len(), 1);
         assert!(files[0].hunks.is_empty());
@@ -760,7 +745,7 @@ mod tests {
         fs::write(temp.path().join("hello.txt"), " hello ship \n")
             .expect("Failed to write non-whitespace edit");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
     }
@@ -797,10 +782,7 @@ mod tests {
             .expect("Expected whitespace commit");
 
         let files = backend
-            .get_working_tree_with_commits_diff(
-                std::slice::from_ref(&whitespace_commit.id),
-                &SyntaxHighlighter::default(),
-            )
+            .get_working_tree_with_commits_diff(std::slice::from_ref(&whitespace_commit.id))
             .expect("whitespace-only edit may surface as a no-op diff file");
         assert_eq!(files.len(), 1);
         assert!(files[0].hunks.is_empty());
@@ -808,10 +790,7 @@ mod tests {
         fs::write(temp.path().join("hello.txt"), " hello ship \n")
             .expect("Failed to write non-whitespace edit");
         let files = backend
-            .get_working_tree_with_commits_diff(
-                std::slice::from_ref(&whitespace_commit.id),
-                &SyntaxHighlighter::default(),
-            )
+            .get_working_tree_with_commits_diff(std::slice::from_ref(&whitespace_commit.id))
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
     }
@@ -967,13 +946,10 @@ mod tests {
 
             let commit_ids = vec![oldest.id.clone(), newest.id.clone()];
             let diff = backend
-                .get_commit_range_diff(
-                    &ResolvedRevisionRange::from_owned_commit_ids(
-                        commit_ids,
-                        RevisionDiffTarget::CommitList,
-                    ),
-                    &SyntaxHighlighter::default(),
-                )
+                .get_commit_range_diff(&ResolvedRevisionRange::from_owned_commit_ids(
+                    commit_ids,
+                    RevisionDiffTarget::CommitList,
+                ))
                 .expect("Failed to get commit range diff");
 
             // Should have changes
@@ -1026,9 +1002,7 @@ mod tests {
         let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create jj backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         // jj should detect the rename
         // Note: jj may show this as delete + add if it doesn't detect the rename
@@ -1077,9 +1051,7 @@ mod tests {
         let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create jj backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 
@@ -1112,9 +1084,7 @@ mod tests {
         let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create jj backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 
@@ -1205,10 +1175,13 @@ mod tests {
 
         let backend = JjBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create jj backend");
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let mut files = backend.get_working_tree_diff().expect("Failed to get diff");
         assert_eq!(files.len(), 1);
+        assert!(
+            files[0].whole_file_text.is_some(),
+            "container file should carry both sides for the lazy highlighter"
+        );
+        crate::syntax::SyntaxHighlighter::default().highlight_files_fully(&mut files);
 
         let changed_lines: Vec<_> = files[0].hunks[0]
             .lines
@@ -1294,7 +1267,7 @@ mod tests {
         // The batched `jj file show` behind container highlighting must not
         // choke on the parentheses in the path.
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("diff should succeed for a path with fileset meta characters");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].new_path.as_deref(), Some(rel.as_path()));

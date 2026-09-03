@@ -32,10 +32,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
+use crate::model::diff_types::WholeFileText;
 use crate::model::{DiffFile, DiffLine, LineOrigin, LineSide};
-use crate::syntax::{
-    HighlightedLines, HighlightedSpans, SyntaxHighlighter, needs_full_file_highlight,
-};
+use crate::syntax::needs_full_file_highlight;
 
 /// Boundary marker emitted between files in batched `hg cat` / `jj file show`
 /// output. The long random suffix makes accidental collision with real source
@@ -114,17 +113,16 @@ pub(crate) fn parse_batched_files(output: &str) -> HashMap<PathBuf, String> {
         .collect()
 }
 
-/// Re-highlight container-grammar files (Vue, Svelte, etc) using their full
-/// content at the requested revisions. `new_rev = None` reads the new side
-/// from the working tree on disk instead of calling `fetch_batch`. The
-/// `fetch_batch` closure is the backend-specific batched-fetch primitive
-/// (`hg cat -r REV ...` or `jj file show -r REV ...`).
-pub(crate) fn apply_container_full_file_highlight<F>(
+/// Attach whole-file text to container-grammar files (Vue, Svelte, etc) at
+/// the requested revisions, for the lazy highlighter to consume. `new_rev =
+/// None` reads the new side from the working tree on disk instead of calling
+/// `fetch_batch`. The `fetch_batch` closure is the backend-specific
+/// batched-fetch primitive (`hg cat -r REV ...` or `jj file show -r REV ...`).
+pub(crate) fn attach_container_whole_file_text<F>(
     root: &Path,
     old_rev: &str,
     new_rev: Option<&str>,
     files: &mut [DiffFile],
-    highlighter: &SyntaxHighlighter,
     fetch_batch: F,
 ) -> Result<()>
 where
@@ -137,20 +135,19 @@ where
         return Ok(());
     }
 
-    let old_map = fetch_batch(root, old_rev, &old_paths)?;
-    let new_map = match new_rev {
+    let mut old_map = fetch_batch(root, old_rev, &old_paths)?;
+    let mut new_map = match new_rev {
         Some(rev) => fetch_batch(root, rev, &new_paths)?,
         None => HashMap::new(),
     };
 
     let workdir = new_rev.is_none().then(|| root.to_path_buf());
 
-    enhance_with_full_file_highlight(
+    attach_whole_file_text(
         files,
-        highlighter,
-        |p| old_map.get(p).cloned(),
-        |p| match (new_map.get(p), workdir.as_deref()) {
-            (Some(content), _) => Some(content.clone()),
+        |p| old_map.remove(p),
+        |p| match (new_map.remove(p), workdir.as_deref()) {
+            (Some(content), _) => Some(content),
             (None, Some(root)) => read_workdir_file(root, p),
             (None, None) => None,
         },
@@ -159,37 +156,23 @@ where
     Ok(())
 }
 
-/// Files larger than this skip the full-file highlight pass and fall back to
-/// per-hunk highlighting. Keeps a runaway-cost ceiling on diffs that include
-/// huge generated artefacts (lockfiles, vendored bundles, fixtures).
-const MAX_HIGHLIGHT_FILE_BYTES: usize = 1024 * 1024;
-
-/// Re-highlight each diff line using full-file context, for files whose
-/// grammar needs it (Vue, Svelte, Astro, MDX). Other files keep their existing
-/// per-hunk highlighting unchanged.
+/// Attach the whole old and new text to each file whose grammar needs it
+/// (see `needs_full_file_highlight`), so the lazy highlighter can parse the
+/// file from its first line when the file is first shown. Other files are
+/// left alone and highlighted per hunk.
 ///
 /// `fetch_old`/`fetch_new` return the entire content of the file at the old
-/// and new sides respectively (or `None` if unavailable). When a side is
-/// available, every diff line on that side is replaced with the span at its
-/// 1-based lineno from the full-file highlight. Lines whose side could not be
-/// fetched keep whatever the parser already assigned.
-///
-/// Runs in three phases: fetch (serial, since fetch closures may close over
-/// `!Send` state such as `git2::Repository`), highlight (parallel via
-/// `std::thread::scope`, since syntect's `SyntaxSet` and `Theme` are `Sync`
-/// and each file's syntect work is independent), and apply spans (serial,
-/// needs `&mut files`).
-pub(crate) fn enhance_with_full_file_highlight<F, G>(
+/// and new sides respectively (or `None` if unavailable). Oversized or binary
+/// text is dropped by `WholeFileText::from_sides`.
+pub(crate) fn attach_whole_file_text<F, G>(
     files: &mut [DiffFile],
-    highlighter: &SyntaxHighlighter,
     mut fetch_old: F,
     mut fetch_new: G,
 ) where
     F: FnMut(&Path) -> Option<String>,
     G: FnMut(&Path) -> Option<String>,
 {
-    let mut jobs: Vec<HighlightJob> = Vec::new();
-    for (idx, file) in files.iter().enumerate() {
+    for file in files.iter_mut() {
         if file.is_binary || file.is_too_large || file.hunks.is_empty() {
             continue;
         }
@@ -201,121 +184,7 @@ pub(crate) fn enhance_with_full_file_highlight<F, G>(
         }
         let old_content = file.old_path.as_deref().and_then(&mut fetch_old);
         let new_content = file.new_path.as_deref().and_then(&mut fetch_new);
-        if old_content.is_none() && new_content.is_none() {
-            continue;
-        }
-        jobs.push(HighlightJob {
-            file_idx: idx,
-            syntax_path: syntax_path.to_path_buf(),
-            old_content,
-            new_content,
-        });
-    }
-
-    if jobs.is_empty() {
-        return;
-    }
-
-    let results = highlight_jobs_parallel(&jobs, highlighter);
-
-    for (idx, old, new) in results {
-        if old.is_none() && new.is_none() {
-            continue;
-        }
-        apply_full_file_spans(&mut files[idx], highlighter, old.as_deref(), new.as_deref());
-    }
-}
-
-struct HighlightJob {
-    file_idx: usize,
-    syntax_path: PathBuf,
-    old_content: Option<String>,
-    new_content: Option<String>,
-}
-
-type HighlightResult = (usize, Option<HighlightedLines>, Option<HighlightedLines>);
-
-fn highlight_jobs_parallel(
-    jobs: &[HighlightJob],
-    highlighter: &SyntaxHighlighter,
-) -> Vec<HighlightResult> {
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(jobs.len());
-
-    if parallelism <= 1 {
-        return jobs
-            .iter()
-            .map(|j| highlight_single_job(j, highlighter))
-            .collect();
-    }
-
-    let chunk_size = jobs.len().div_ceil(parallelism);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = jobs
-            .chunks(chunk_size)
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|j| highlight_single_job(j, highlighter))
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("highlight thread panicked"))
-            .collect()
-    })
-}
-
-fn highlight_single_job(job: &HighlightJob, highlighter: &SyntaxHighlighter) -> HighlightResult {
-    let old = job
-        .old_content
-        .as_deref()
-        .and_then(|c| highlight_content(highlighter, &job.syntax_path, c));
-    let new = job
-        .new_content
-        .as_deref()
-        .and_then(|c| highlight_content(highlighter, &job.syntax_path, c));
-    (job.file_idx, old, new)
-}
-
-fn highlight_content(
-    highlighter: &SyntaxHighlighter,
-    path: &Path,
-    content: &str,
-) -> Option<HighlightedLines> {
-    if content.len() > MAX_HIGHLIGHT_FILE_BYTES || content.as_bytes().contains(&0u8) {
-        return None;
-    }
-    let lines: Vec<String> = content.lines().map(tabify).collect();
-    highlighter.highlight_file_lines(path, &lines)
-}
-
-fn apply_full_file_spans(
-    file: &mut DiffFile,
-    highlighter: &SyntaxHighlighter,
-    old_highlight: Option<&[Option<HighlightedSpans>]>,
-    new_highlight: Option<&[Option<HighlightedSpans>]>,
-) {
-    for hunk in &mut file.hunks {
-        for line in &mut hunk.lines {
-            let old_idx = line.old_lineno.map(|n| n.saturating_sub(1) as usize);
-            let new_idx = line.new_lineno.map(|n| n.saturating_sub(1) as usize);
-            let spans = highlighter.highlighted_line_for_diff_with_background(
-                old_highlight,
-                new_highlight,
-                old_idx,
-                new_idx,
-                line.origin,
-            );
-            if spans.is_some() {
-                line.highlighted_spans = spans;
-            }
-        }
+        file.whole_file_text = WholeFileText::from_sides(old_content, new_content);
     }
 }
 
@@ -444,6 +313,7 @@ mod tests {
             old_count: 1,
             new_start: target_line,
             new_count: 1,
+            highlight: Default::default(),
         };
         DiffFile {
             old_path: Some(path.clone()),
@@ -454,195 +324,77 @@ mod tests {
             is_too_large: false,
             is_commit_message: false,
             content_hash: 0,
+            whole_file_text: None,
         }
     }
 
-    fn make_vue_file(idx: usize) -> (DiffFile, String, String) {
-        let old = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\n\
-                   import { ref } from 'vue'\nconst msg = ref('hi')\nconst other = 1\n</script>\n";
-        let new = "<template>\n  <div>{{ msg }}</div>\n</template>\n\n<script setup>\n\
-                   import { ref } from 'vue'\nconst msg = ref('hello')\nconst other = 1\n</script>\n";
-        let file = vue_diff_file(idx, "const msg = ref('hi')", "const msg = ref('hello')", 7);
-        (file, old.to_string(), new.to_string())
-    }
+    #[test]
+    fn attach_whole_file_text_should_only_touch_container_files() {
+        let mut vue = vue_diff_file(0, "a", "b", 1);
+        let mut rust = vue_diff_file(1, "a", "b", 1);
+        rust.new_path = Some(PathBuf::from("main.rs"));
+        rust.old_path = rust.new_path.clone();
+        let mut files = vec![vue.clone(), rust.clone()];
 
-    fn highlight_n_vue_files(n: usize) -> Vec<DiffFile> {
-        use crate::syntax::SyntaxHighlighter;
-
-        let mut files = Vec::with_capacity(n);
-        let mut content_map: HashMap<PathBuf, (String, String)> = HashMap::new();
-        for i in 0..n {
-            let (file, old, new) = make_vue_file(i);
-            let path = file.new_path.clone().unwrap();
-            content_map.insert(path, (old, new));
-            files.push(file);
-        }
-
-        let highlighter = SyntaxHighlighter::default();
-        enhance_with_full_file_highlight(
+        attach_whole_file_text(
             &mut files,
-            &highlighter,
-            |p| content_map.get(p).map(|(o, _)| o.clone()),
-            |p| content_map.get(p).map(|(_, n)| n.clone()),
+            |_| Some("old".to_string()),
+            |_| Some("new".to_string()),
         );
-        files
-    }
 
-    fn assert_all_lines_highlighted(files: &[DiffFile]) {
-        for (i, file) in files.iter().enumerate() {
-            for line in &file.hunks[0].lines {
-                let spans = line.highlighted_spans.as_ref().unwrap_or_else(|| {
-                    panic!(
-                        "file {i} line {:?} should have highlighted spans",
-                        line.content
-                    )
-                });
-                let unique_fgs: std::collections::HashSet<_> =
-                    spans.iter().filter_map(|(s, _)| s.fg).collect();
-                assert!(
-                    unique_fgs.len() > 1,
-                    "file {i} line {:?} should have multiple distinct fg colors, got {unique_fgs:?}",
-                    line.content
-                );
-            }
-        }
+        let text = files[0]
+            .whole_file_text
+            .as_ref()
+            .expect("vue file gets text");
+        assert_eq!(text.old.as_deref(), Some("old"));
+        assert_eq!(text.new.as_deref(), Some("new"));
+        assert!(files[1].whole_file_text.is_none());
+
+        vue.is_binary = true;
+        let mut files = vec![vue];
+        attach_whole_file_text(&mut files, |_| Some("old".into()), |_| Some("new".into()));
+        assert!(files[0].whole_file_text.is_none());
     }
 
     #[test]
-    fn enhance_full_file_highlight_serial_path_one_file() {
-        // Single file takes the serial branch in highlight_jobs_parallel.
-        let files = highlight_n_vue_files(1);
-        assert_all_lines_highlighted(&files);
+    fn attach_whole_file_text_should_drop_missing_and_oversized_sides() {
+        let mut files = vec![vue_diff_file(0, "a", "b", 1)];
+        attach_whole_file_text(&mut files, |_| None, |_| None);
+        assert!(files[0].whole_file_text.is_none());
+
+        let huge = "x".repeat(WholeFileText::MAX_BYTES + 1);
+        attach_whole_file_text(&mut files, |_| Some(huge.clone()), |_| Some("new".into()));
+        let text = files[0].whole_file_text.as_ref().unwrap();
+        assert!(text.old.is_none());
+        assert_eq!(text.new.as_deref(), Some("new"));
+
+        attach_whole_file_text(&mut files, |_| Some("a\0b".into()), |_| None);
+        assert!(files[0].whole_file_text.is_none());
     }
 
     #[test]
-    fn enhance_full_file_highlight_parallel_path_many_files() {
-        // 12 files exceeds typical parallelism, forcing chunked thread::scope.
-        let files = highlight_n_vue_files(12);
-        assert_eq!(files.len(), 12);
-        assert_all_lines_highlighted(&files);
-    }
+    fn attach_container_whole_file_text_should_read_new_side_from_workdir() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("Comp0.vue"), "on disk").unwrap();
+        let mut files = vec![vue_diff_file(0, "a", "b", 1)];
+        let fetched = std::cell::RefCell::new(Vec::new());
 
-    fn synth_vue_file(idx: usize) -> (DiffFile, String, String) {
-        let mut html = String::from("<template>\n  <div class=\"app\">\n");
-        for i in 0..80 {
-            html.push_str(&format!("    <span class=\"item-{i}\">item {i}</span>\n"));
-        }
-        html.push_str("  </div>\n</template>\n\n");
+        attach_container_whole_file_text(temp.path(), "base", None, &mut files, |_, rev, paths| {
+            fetched.borrow_mut().push((rev.to_string(), paths.to_vec()));
+            Ok(paths
+                .iter()
+                .map(|p| (p.clone(), format!("{rev}:{}", p.display())))
+                .collect())
+        })
+        .unwrap();
 
-        let mut script =
-            String::from("<script setup lang=\"ts\">\nimport { ref, computed } from 'vue'\n\n");
-        for i in 0..90 {
-            script.push_str(&format!("const value{i} = ref({i})\n"));
-        }
-        script.push_str("</script>\n\n");
-
-        let mut style = String::from("<style scoped>\n");
-        for i in 0..30 {
-            style.push_str(&format!(".item-{i} {{ color: rgb({i}, 0, 0); }}\n"));
-        }
-        style.push_str("</style>\n");
-
-        let old = format!("{html}{script}{style}");
-        let new = old.replace("const value0 = ref(0)", "const value0 = ref(42)");
-
-        let target_line = new
-            .lines()
-            .position(|l| l.starts_with("const value0 = ref(42)"))
-            .expect("synth content must contain target line") as u32
-            + 1;
-        let file = vue_diff_file(
-            idx,
-            "const value0 = ref(0)",
-            "const value0 = ref(42)",
-            target_line,
+        let text = files[0].whole_file_text.as_ref().unwrap();
+        assert_eq!(text.old.as_deref(), Some("base:Comp0.vue"));
+        assert_eq!(text.new.as_deref(), Some("on disk"));
+        assert_eq!(
+            fetched.borrow().len(),
+            1,
+            "no batch fetch for the workdir side"
         );
-        (file, old, new)
-    }
-
-    /// Manual bench: parallel vs serial highlight at realistic scales.
-    /// Run with: `cargo test --release vcs::tests::bench_highlight_parallel_vs_serial -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn bench_highlight_parallel_vs_serial() {
-        use crate::syntax::SyntaxHighlighter;
-        use std::time::Instant;
-
-        let highlighter = SyntaxHighlighter::default();
-        let scales = [1usize, 5, 12, 25, 50];
-        let runs = 5;
-
-        for &n in &scales {
-            let mut files_template = Vec::with_capacity(n);
-            let mut content_map: HashMap<PathBuf, (String, String)> = HashMap::new();
-            for i in 0..n {
-                let (file, old, new) = synth_vue_file(i);
-                content_map.insert(file.new_path.clone().unwrap(), (old, new));
-                files_template.push(file);
-            }
-
-            let jobs: Vec<HighlightJob> = files_template
-                .iter()
-                .enumerate()
-                .map(|(idx, f)| {
-                    let path = f.new_path.clone().unwrap();
-                    let (old, new) = content_map.get(&path).unwrap();
-                    HighlightJob {
-                        file_idx: idx,
-                        syntax_path: path,
-                        old_content: Some(old.clone()),
-                        new_content: Some(new.clone()),
-                    }
-                })
-                .collect();
-
-            // Warmup
-            let _ = highlight_jobs_parallel(&jobs, &highlighter);
-
-            let mut par_total = std::time::Duration::ZERO;
-            for _ in 0..runs {
-                let t = Instant::now();
-                let _ = highlight_jobs_parallel(&jobs, &highlighter);
-                par_total += t.elapsed();
-            }
-            let par_mean = par_total / runs as u32;
-
-            let mut ser_total = std::time::Duration::ZERO;
-            for _ in 0..runs {
-                let t = Instant::now();
-                let _: Vec<HighlightResult> = jobs
-                    .iter()
-                    .map(|j| highlight_single_job(j, &highlighter))
-                    .collect();
-                ser_total += t.elapsed();
-            }
-            let ser_mean = ser_total / runs as u32;
-
-            let speedup = ser_mean.as_secs_f64() / par_mean.as_secs_f64().max(1e-9);
-            println!(
-                "N={n:>3}: serial={ser_mean:>10.2?}  parallel={par_mean:>10.2?}  speedup={speedup:.2}x"
-            );
-        }
-    }
-
-    #[test]
-    fn enhance_full_file_highlight_results_match_input_order() {
-        // Each file's highlighted spans must land on that file's hunk lines,
-        // not a neighbour's. Distinguishable by line content.
-        let files = highlight_n_vue_files(6);
-        for (i, file) in files.iter().enumerate() {
-            let path = file.new_path.as_ref().unwrap();
-            assert_eq!(path.to_str().unwrap(), format!("Comp{i}.vue"));
-            let added = file
-                .hunks
-                .iter()
-                .flat_map(|h| &h.lines)
-                .find(|l| l.origin == crate::model::diff_types::LineOrigin::Addition)
-                .expect("addition line");
-            assert!(
-                added.highlighted_spans.is_some(),
-                "file {i} addition unhighlighted"
-            );
-        }
     }
 }

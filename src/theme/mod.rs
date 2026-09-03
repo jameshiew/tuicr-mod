@@ -2347,18 +2347,6 @@ impl Theme {
             .get_or_init(|| Arc::new(self.build_highlighter()))
     }
 
-    /// Cloned handle to the same cached highlighter `syntax_highlighter`
-    /// returns. `Arc::clone` is a refcount bump, not a rebuild, so a
-    /// diff-watch worker thread can carry one across `thread::spawn` (the
-    /// highlighter itself is not `&'static` and `Theme` lives on `App`,
-    /// which the worker cannot borrow).
-    pub(crate) fn syntax_highlighter_arc(&self) -> Arc<SyntaxHighlighter> {
-        Arc::clone(
-            self.highlighter
-                .get_or_init(|| Arc::new(self.build_highlighter())),
-        )
-    }
-
     fn build_highlighter(&self) -> SyntaxHighlighter {
         match &self.syntax_theme {
             SyntaxThemeSource::Embedded(theme) => {

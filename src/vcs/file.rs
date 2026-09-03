@@ -5,7 +5,7 @@ use ignore::WalkBuilder;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::HunkHighlight;
 
 use super::traits::{VcsBackend, VcsInfo, VcsType};
 use crate::vcs::slice_context_lines;
@@ -155,12 +155,7 @@ impl FileBackend {
         })
     }
 
-    fn build_diff_file_for_path(
-        &self,
-        highlighter: &SyntaxHighlighter,
-        abs_path: &Path,
-        file_size: u64,
-    ) -> Option<DiffFile> {
+    fn build_diff_file_for_path(&self, abs_path: &Path, file_size: u64) -> Option<DiffFile> {
         // Binary check first so a too-large binary is skipped (not surfaced
         // as a misleading is_too_large text placeholder), and so single-file
         // mode (which never went through `collect_text_files`) is also guarded.
@@ -185,6 +180,7 @@ impl FileBackend {
                 is_binary: false,
                 is_too_large: true,
                 is_commit_message: false,
+                whole_file_text: None,
                 content_hash,
             });
         }
@@ -200,45 +196,27 @@ impl FileBackend {
             FileMode::Single | FileMode::Directory => LineOrigin::Addition,
         };
 
-        // Build line contents and origins for syntax highlighting
-        let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
-        let line_origins: Vec<LineOrigin> = vec![render_origin; line_contents.len()];
-
-        // Apply syntax highlighting
-        let highlight_sequences =
-            SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-        let new_highlighted_lines =
-            highlighter.highlight_file_lines(abs_path, &highlight_sequences.new_lines);
-
-        // Build DiffLines
-        let mut diff_lines = Vec::with_capacity(lines.len());
-        for (i, content) in line_contents.iter().enumerate() {
-            let line_num = (i + 1) as u32;
-
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                None,
-                new_highlighted_lines.as_deref(),
-                None,
-                highlight_sequences.new_line_indices[i],
-                render_origin,
-            );
-
-            // Pristine context lines need both old_lineno and new_lineno
-            // populated so the side-by-side and unified renderers walk the
-            // gutter math correctly.
-            let old_lineno = match self.mode {
-                FileMode::Pristine => Some(line_num),
-                FileMode::Single | FileMode::Directory => None,
-            };
-
-            diff_lines.push(DiffLine {
-                origin: render_origin,
-                content: content.clone(),
-                old_lineno,
-                new_lineno: Some(line_num),
-                highlighted_spans,
-            });
-        }
+        // Pristine context lines need both old_lineno and new_lineno
+        // populated so the side-by-side and unified renderers walk the
+        // gutter math correctly.
+        let diff_lines: Vec<DiffLine> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let line_num = (i + 1) as u32;
+                let old_lineno = match self.mode {
+                    FileMode::Pristine => Some(line_num),
+                    FileMode::Single | FileMode::Directory => None,
+                };
+                DiffLine {
+                    origin: render_origin,
+                    content: super::tabify(line),
+                    old_lineno,
+                    new_lineno: Some(line_num),
+                    highlighted_spans: None,
+                }
+            })
+            .collect();
 
         let total_lines = lines.len() as u32;
         let (hunk_header, old_start, old_count) = match self.mode {
@@ -264,6 +242,7 @@ impl FileBackend {
             old_count,
             new_start: 1,
             new_count: total_lines,
+            highlight: HunkHighlight::default(),
         };
 
         let hunks = vec![hunk];
@@ -276,6 +255,7 @@ impl FileBackend {
             is_binary: false,
             is_too_large: false,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         })
     }
@@ -286,11 +266,11 @@ impl VcsBackend for FileBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         let diff_files: Vec<DiffFile> = self
             .files
             .iter()
-            .filter_map(|(p, size)| self.build_diff_file_for_path(highlighter, p, *size))
+            .filter_map(|(p, size)| self.build_diff_file_for_path(p, *size))
             .collect();
 
         if diff_files.is_empty() {
@@ -386,11 +366,6 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::syntax::SyntaxHighlighter;
-
-    fn highlighter() -> SyntaxHighlighter {
-        SyntaxHighlighter::default()
-    }
 
     #[test]
     fn single_file_mode_returns_one_diff_file() {
@@ -399,7 +374,7 @@ mod tests {
         fs::write(&path, "alpha\nbeta\n").unwrap();
 
         let backend = FileBackend::new(path.to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let diffs = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         assert_eq!(
@@ -417,7 +392,7 @@ mod tests {
         fs::write(dir.path().join("ignored.txt"), "skip me\n").unwrap();
 
         let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let diffs = backend.get_working_tree_diff().unwrap();
 
         let names: Vec<_> = diffs
             .iter()
@@ -444,7 +419,7 @@ mod tests {
         fs::write(sub.join("inner.txt"), "x\n").unwrap();
 
         let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let diffs = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         assert_eq!(
@@ -466,7 +441,7 @@ mod tests {
         .unwrap();
         let root = dir.path().canonicalize().unwrap();
         let backend = FileBackend::new_pristine(vec![path.clone()], root).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let diffs = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         let hunk = &diffs[0].hunks[0];
@@ -489,7 +464,7 @@ mod tests {
         fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
 
         let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let diffs = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         let hunk = &diffs[0].hunks[0];
@@ -509,7 +484,7 @@ mod tests {
 
         let root = dir.path().canonicalize().unwrap();
         let backend = FileBackend::new_pristine(vec![text_path.clone(), bin_path], root).unwrap();
-        let diffs = backend.get_working_tree_diff(&highlighter()).unwrap();
+        let diffs = backend.get_working_tree_diff().unwrap();
 
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].new_path.as_deref().unwrap(), Path::new("text.txt"));

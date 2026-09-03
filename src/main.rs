@@ -334,6 +334,9 @@ fn main() -> anyhow::Result<()> {
         }
 
         needs_redraw |= app.clear_expired_message();
+        // Syntax highlighting is rationed per frame; keep drawing until the
+        // rows on screen all have their spans.
+        needs_redraw |= app.highlight_pending;
 
         needs_redraw |= app.poll_editor_launches();
         if !pending_z && !pending_shift_z && !pending_d && !pending_leader {

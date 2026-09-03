@@ -459,7 +459,6 @@ mod header_snapshot_tests {
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
-    use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
     use ratatui::Terminal;
@@ -474,10 +473,7 @@ mod header_snapshot_tests {
         fn info(&self) -> &VcsInfo {
             &self.info
         }
-        fn get_working_tree_diff(
-            &self,
-            _highlighter: &SyntaxHighlighter,
-        ) -> TuicrResult<Vec<DiffFile>> {
+        fn get_working_tree_diff(&self) -> TuicrResult<Vec<DiffFile>> {
             Err(TuicrError::NoChanges)
         }
         fn fetch_context_lines(

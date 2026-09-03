@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_output};
-use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsChangeStatus,
@@ -160,7 +159,7 @@ impl GitBackend {
         Self::discover_from(&cwd, preference, whitespace_mode)
     }
 
-    fn discover_from(
+    pub(crate) fn discover_from(
         cwd: &Path,
         preference: GitBackendPreference,
         whitespace_mode: DiffWhitespaceMode,
@@ -268,24 +267,24 @@ impl VcsBackend for GitBackend {
         }
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         match self {
-            Self::Libgit2(backend) => backend.get_working_tree_diff(highlighter),
-            Self::Cli(backend) => backend.get_working_tree_diff(highlighter),
+            Self::Libgit2(backend) => backend.get_working_tree_diff(),
+            Self::Cli(backend) => backend.get_working_tree_diff(),
         }
     }
 
-    fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_staged_diff(&self) -> Result<Vec<DiffFile>> {
         match self {
-            Self::Libgit2(backend) => backend.get_staged_diff(highlighter),
-            Self::Cli(backend) => backend.get_staged_diff(highlighter),
+            Self::Libgit2(backend) => backend.get_staged_diff(),
+            Self::Cli(backend) => backend.get_staged_diff(),
         }
     }
 
-    fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_unstaged_diff(&self) -> Result<Vec<DiffFile>> {
         match self {
-            Self::Libgit2(backend) => backend.get_unstaged_diff(highlighter),
-            Self::Cli(backend) => backend.get_unstaged_diff(highlighter),
+            Self::Libgit2(backend) => backend.get_unstaged_diff(),
+            Self::Cli(backend) => backend.get_unstaged_diff(),
         }
     }
 
@@ -358,11 +357,10 @@ impl VcsBackend for GitBackend {
     fn get_commit_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         match self {
-            Self::Libgit2(backend) => backend.get_commit_range_diff(revision_range, highlighter),
-            Self::Cli(backend) => backend.get_commit_range_diff(revision_range, highlighter),
+            Self::Libgit2(backend) => backend.get_commit_range_diff(revision_range),
+            Self::Cli(backend) => backend.get_commit_range_diff(revision_range),
         }
     }
 
@@ -373,18 +371,10 @@ impl VcsBackend for GitBackend {
         }
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
         match self {
-            Self::Libgit2(backend) => {
-                backend.get_working_tree_with_commits_diff(commit_ids, highlighter)
-            }
-            Self::Cli(backend) => {
-                backend.get_working_tree_with_commits_diff(commit_ids, highlighter)
-            }
+            Self::Libgit2(backend) => backend.get_working_tree_with_commits_diff(commit_ids),
+            Self::Cli(backend) => backend.get_working_tree_with_commits_diff(commit_ids),
         }
     }
 

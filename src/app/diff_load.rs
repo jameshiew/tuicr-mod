@@ -77,6 +77,7 @@ impl App {
             old_count: 0,
             new_start: 1,
             new_count: line_count,
+            highlight: HunkHighlight::default(),
         }];
         let content_hash = DiffFile::compute_content_hash(&hunks);
         let commit_msg_file = DiffFile {
@@ -90,6 +91,7 @@ impl App {
             is_binary: false,
             is_too_large: false,
             is_commit_message: true,
+            whole_file_text: None,
             content_hash,
         };
         self.diff_files.insert(0, commit_msg_file);
@@ -149,12 +151,11 @@ impl App {
     pub(in crate::app) fn get_working_tree_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_working_tree",
-            || vcs.get_working_tree_diff(highlighter),
+            || vcs.get_working_tree_diff(),
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -169,12 +170,11 @@ impl App {
     pub(in crate::app) fn get_staged_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_staged",
-            || vcs.get_staged_diff(highlighter),
+            || vcs.get_staged_diff(),
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -189,18 +189,17 @@ impl App {
     pub(in crate::app) fn get_unstaged_diff_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = match crate::profile::time_with(
             "diff.load_unstaged",
-            || vcs.get_unstaged_diff(highlighter),
+            || vcs.get_unstaged_diff(),
             profile_diff_result,
         ) {
             Ok(diff_files) => diff_files,
             Err(TuicrError::UnsupportedOperation(_)) => crate::profile::time_with(
                 "diff.load_unstaged_fallback_working_tree",
-                || vcs.get_working_tree_diff(highlighter),
+                || vcs.get_working_tree_diff(),
                 profile_diff_result,
             )?,
             Err(e) => return Err(e),
@@ -218,12 +217,11 @@ impl App {
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_commit_range",
-            || vcs.get_commit_range_diff(revision_range, highlighter),
+            || vcs.get_commit_range_diff(revision_range),
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -239,12 +237,11 @@ impl App {
         vcs: &dyn VcsBackend,
         repo_root: &Path,
         commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         let diff_files = crate::profile::time_with(
             "diff.load_working_tree_with_commits",
-            || vcs.get_working_tree_with_commits_diff(commit_ids, highlighter),
+            || vcs.get_working_tree_with_commits_diff(commit_ids),
             profile_diff_result,
         )?;
         let diff_files = Self::filter_ignored_diff_files(repo_root, diff_files);
@@ -266,7 +263,6 @@ impl App {
     pub(in crate::app) fn get_change_status_with_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<VcsChangeStatus> {
         // Jujutsu has no staging index: its working copy is represented by `@`.
@@ -285,13 +281,7 @@ impl App {
                     if !crate::tuicrignore::has_tuicrignore(repo_root) {
                         return Ok(status);
                     }
-                    return Self::verify_status_against_ignore(
-                        vcs,
-                        repo_root,
-                        highlighter,
-                        path_filter,
-                        status,
-                    );
+                    return Self::verify_status_against_ignore(vcs, repo_root, path_filter, status);
                 }
                 Err(TuicrError::UnsupportedOperation(_)) => {}
                 Err(e) => return Err(e),
@@ -301,7 +291,6 @@ impl App {
         Self::verify_status_against_ignore(
             vcs,
             repo_root,
-            highlighter,
             path_filter,
             VcsChangeStatus {
                 staged: true,
@@ -316,29 +305,16 @@ impl App {
     fn verify_status_against_ignore(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         assumed_status: VcsChangeStatus,
     ) -> Result<VcsChangeStatus> {
         let staged = if assumed_status.staged {
-            Self::side_has_visible_changes(
-                vcs,
-                repo_root,
-                highlighter,
-                path_filter,
-                ChangeKind::Staged,
-            )?
+            Self::side_has_visible_changes(vcs, repo_root, path_filter, ChangeKind::Staged)?
         } else {
             false
         };
         let unstaged = if assumed_status.unstaged {
-            Self::side_has_visible_changes(
-                vcs,
-                repo_root,
-                highlighter,
-                path_filter,
-                ChangeKind::Unstaged,
-            )?
+            Self::side_has_visible_changes(vcs, repo_root, path_filter, ChangeKind::Unstaged)?
         } else {
             false
         };
@@ -348,7 +324,6 @@ impl App {
     fn side_has_visible_changes(
         vcs: &dyn VcsBackend,
         repo_root: &Path,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         kind: ChangeKind,
     ) -> Result<bool> {
@@ -363,14 +338,11 @@ impl App {
                 // anything survives. This still happens for jj/hg today.
                 let diff_result = match kind {
                     ChangeKind::Staged => {
-                        Self::get_staged_diff_with_ignore(vcs, repo_root, highlighter, path_filter)
+                        Self::get_staged_diff_with_ignore(vcs, repo_root, path_filter)
                     }
-                    ChangeKind::Unstaged => Self::get_unstaged_diff_with_ignore(
-                        vcs,
-                        repo_root,
-                        highlighter,
-                        path_filter,
-                    ),
+                    ChangeKind::Unstaged => {
+                        Self::get_unstaged_diff_with_ignore(vcs, repo_root, path_filter)
+                    }
                 };
                 match diff_result {
                     Ok(_) => Ok(true),
@@ -409,11 +381,9 @@ impl App {
     }
 
     pub(in crate::app) fn load_staged_and_unstaged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_working_tree_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
@@ -450,11 +420,9 @@ impl App {
     /// the session identity, even though this loader and the staged-plus-
     /// unstaged loader read the same diff.
     pub(in crate::app) fn load_staged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_staged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
@@ -485,11 +453,9 @@ impl App {
     }
 
     pub(in crate::app) fn load_unstaged_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_unstaged_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
@@ -521,13 +487,6 @@ impl App {
 
     /// Fetches diff files for the current `diff_source`.
     fn fetch_diff_files(&self) -> Result<Vec<DiffFile>> {
-        self.fetch_diff_files_with(self.theme.syntax_highlighter())
-    }
-
-    /// Same as `fetch_diff_files`, with the highlighter as a parameter so the
-    /// diff-watch gate can run a cheap parse against `probe_highlighter()` before
-    /// deciding to pay for a highlighted one.
-    fn fetch_diff_files_with(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
         let fetch_source = Self::narrowed_fetch_source(
             &self.diff_source,
             &self.review_commits,
@@ -537,7 +496,6 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
-            highlighter,
             self.path_filter.as_deref(),
         )
     }
@@ -666,7 +624,6 @@ impl App {
         vcs: &dyn VcsBackend,
         root_path: &Path,
         diff_source: &DiffSource,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
     ) -> Result<Vec<DiffFile>> {
         match diff_source {
@@ -674,7 +631,6 @@ impl App {
                 vcs,
                 root_path,
                 &ResolvedRevisionRange::from_commit_ids(commit_ids, RevisionDiffTarget::CommitList),
-                highlighter,
                 path_filter,
             ),
             DiffSource::StagedUnstagedAndCommits(commit_ids) => {
@@ -682,18 +638,15 @@ impl App {
                     vcs,
                     root_path,
                     commit_ids,
-                    highlighter,
                     path_filter,
                 )
             }
-            DiffSource::Staged => {
-                Self::get_staged_diff_with_ignore(vcs, root_path, highlighter, path_filter)
-            }
+            DiffSource::Staged => Self::get_staged_diff_with_ignore(vcs, root_path, path_filter),
             DiffSource::Unstaged => {
-                Self::get_unstaged_diff_with_ignore(vcs, root_path, highlighter, path_filter)
+                Self::get_unstaged_diff_with_ignore(vcs, root_path, path_filter)
             }
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
-                Self::get_working_tree_diff_with_ignore(vcs, root_path, highlighter, path_filter)
+                Self::get_working_tree_diff_with_ignore(vcs, root_path, path_filter)
             }
         }
     }
@@ -812,15 +765,14 @@ impl App {
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &fetch_source,
-            self.theme.syntax_highlighter(),
             self.path_filter.as_deref(),
             diff_files_fingerprint(&self.diff_files),
         )
     }
 
-    /// The probe-then-real-fetch gate: returns the fetched diff only when it
-    /// differs from `current`, the fingerprint of what's already on screen.
-    /// Shared by `fetch_changed_diff_files` (main thread, `self.vcs`) and
+    /// The change gate: returns the fetched diff only when it differs from
+    /// `current`, the fingerprint of what's already on screen. Shared by
+    /// `fetch_changed_diff_files` (main thread, `self.vcs`) and
     /// `diff_watch_fetch` (worker thread, its own freshly opened backend) so
     /// the decision exists once and both run identically.
     ///
@@ -828,39 +780,16 @@ impl App {
     /// `narrowed_fetch_source` first, so this function stays about the gate and
     /// knows nothing about commit selection.
     ///
-    /// The comparison runs against a parse that skips syntax highlighting first.
-    /// That is 98% of the cost and fingerprints identically, so an unchanged
-    /// tick costs roughly 3ms instead of 195ms on a 4,000-line diff.
+    /// Backends parse without highlighting, so one fetch is the whole cost of
+    /// an unchanged tick: roughly 1µs per diff line.
     fn changed_diff_files_for_source(
         vcs: &dyn VcsBackend,
         root_path: &Path,
         fetch_source: &DiffSource,
-        highlighter: &SyntaxHighlighter,
         path_filter: Option<&str>,
         current: u64,
     ) -> Result<Option<Vec<DiffFile>>> {
-        let probe = Self::fetch_diff_files_for_source(
-            vcs,
-            root_path,
-            fetch_source,
-            probe_highlighter(),
-            path_filter,
-        )?;
-        if diff_files_fingerprint(&probe) == current {
-            return Ok(None);
-        }
-
-        // Re-check after the real fetch. The two reads can be seconds apart, and an
-        // edit that lands between them can be reverted, leaving a fetch that matches
-        // the screen again. Applying it would reset collapsed folders and expanded
-        // gaps with nothing new to show.
-        let fetched = Self::fetch_diff_files_for_source(
-            vcs,
-            root_path,
-            fetch_source,
-            highlighter,
-            path_filter,
-        )?;
+        let fetched = Self::fetch_diff_files_for_source(vcs, root_path, fetch_source, path_filter)?;
         if diff_files_fingerprint(&fetched) == current {
             return Ok(None);
         }
@@ -872,12 +801,10 @@ impl App {
         selected_ids: Vec<String>,
         selected_commits: Vec<CommitInfo>,
     ) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_working_tree_with_commits_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &selected_ids,
-            highlighter,
             self.path_filter.as_deref(),
         ) {
             Ok(diff_files) => diff_files,
@@ -1039,7 +966,6 @@ impl App {
         };
         let path_filter = self.path_filter.clone();
         let vcs_open_options = self.vcs_open_options;
-        let highlighter = self.theme.syntax_highlighter_arc();
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.diff_watch_reload = Some(DiffWatchReload {
@@ -1057,7 +983,6 @@ impl App {
                 &request,
                 &review_commits,
                 path_filter.as_deref(),
-                &highlighter,
                 current,
             );
             match outcome {
@@ -1081,7 +1006,6 @@ impl App {
         request: &DiffWatchReloadRequest,
         review_commits: &[CommitInfo],
         path_filter: Option<&str>,
-        highlighter: &SyntaxHighlighter,
         current: u64,
     ) -> Result<DiffWatchFetched> {
         let vcs = detect_vcs(
@@ -1101,7 +1025,6 @@ impl App {
                     vcs.as_ref(),
                     root_path,
                     &fetch_source,
-                    highlighter,
                     path_filter,
                     current,
                 ) {
@@ -1125,13 +1048,8 @@ impl App {
         // combined working-tree diff byte-identical, so the fingerprint above
         // reports nothing and only this can tell the pane that a side gained
         // or lost its row.
-        let change_status = Self::get_change_status_with_ignore(
-            vcs.as_ref(),
-            root_path,
-            probe_highlighter(),
-            path_filter,
-        )
-        .ok();
+        let change_status =
+            Self::get_change_status_with_ignore(vcs.as_ref(), root_path, path_filter).ok();
         Ok(DiffWatchFetched {
             diff_files: files,
             commits,
@@ -1623,13 +1541,6 @@ pub(in crate::app) fn normalize_diff_watch_result(
     }
 }
 
-/// One shared plain highlighter. Building a `SyntaxSet` costs something even when
-/// it is empty, and the watcher asks for this on every tick.
-fn probe_highlighter() -> &'static SyntaxHighlighter {
-    static PROBE: std::sync::OnceLock<SyntaxHighlighter> = std::sync::OnceLock::new();
-    PROBE.get_or_init(SyntaxHighlighter::plain)
-}
-
 /// Fingerprint of one file. `content_hash` alone is insufficient: binary and
 /// too-large files all carry the same empty-hunks hash, so a file flipping to
 /// too-large would otherwise look unchanged.
@@ -1682,6 +1593,7 @@ mod tests {
             is_binary,
             is_too_large,
             is_commit_message: false,
+            whole_file_text: None,
             content_hash,
         }
     }

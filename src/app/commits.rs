@@ -108,11 +108,9 @@ impl App {
             self.saved_inline_selection = self.commit_selection_range;
         }
 
-        let highlighter = self.theme.syntax_highlighter();
         let change_status = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
-            highlighter,
             self.path_filter.as_deref(),
         )?;
         let has_staged_changes = change_status.staged;
@@ -170,11 +168,9 @@ impl App {
             self.diff_source,
             DiffSource::CommitRange(_) | DiffSource::StagedUnstagedAndCommits(_)
         ) {
-            let highlighter = self.theme.syntax_highlighter();
             match Self::get_working_tree_diff_with_ignore(
                 self.vcs.as_ref(),
                 &self.vcs_info.root_path,
-                highlighter,
                 self.path_filter.as_deref(),
             ) {
                 Ok(diff_files) => {
@@ -600,12 +596,10 @@ impl App {
         selected_commits: Vec<CommitInfo>,
     ) -> Result<()> {
         // Get the diff for the selected commits
-        let highlighter = self.theme.syntax_highlighter();
         let diff_files = Self::get_commit_range_diff_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             &ResolvedRevisionRange::from_commit_ids(&selected_ids, RevisionDiffTarget::CommitList),
-            highlighter,
             self.path_filter.as_deref(),
         )?;
 
@@ -706,12 +700,10 @@ impl App {
             None => {
                 let fetch_source =
                     Self::source_for_commit_subrange(&self.review_commits, start, end);
-                let highlighter = self.theme.syntax_highlighter();
                 let fetched = match Self::fetch_diff_files_for_source(
                     self.vcs.as_ref(),
                     &self.vcs_info.root_path,
                     &fetch_source,
-                    highlighter,
                     self.path_filter.as_deref(),
                 ) {
                     Ok(files) => files,

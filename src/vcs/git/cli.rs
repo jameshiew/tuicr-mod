@@ -9,7 +9,7 @@ use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::HunkHighlight;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
@@ -19,9 +19,7 @@ use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
     VcsBackend, VcsChangeStatus, VcsInfo,
 };
-use crate::vcs::{
-    container_file_paths, enhance_with_full_file_highlight, slice_context_lines, tabify,
-};
+use crate::vcs::{attach_whole_file_text, container_file_paths, slice_context_lines, tabify};
 
 use super::{
     GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
@@ -94,7 +92,6 @@ impl GitCliBackend {
         include_untracked: bool,
         old_source: GitContentSource<'_>,
         new_source: GitContentSource<'_>,
-        highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         // Paths and status come from Git's NUL-delimited raw records. Patch
         // headers remain display-only and may follow any user quoting/prefix
@@ -105,19 +102,15 @@ impl GitCliBackend {
         if self.whitespace_mode.ignores_all() {
             args.insert(1, "--ignore-all-space".to_string());
         }
-        let mut files = match run_git_diff_command(
-            &self.root_path,
-            args,
-            self.whitespace_mode.ignores_all(),
-            highlighter,
-        ) {
-            Ok(files) => files,
-            Err(TuicrError::NoChanges) => Vec::new(),
-            Err(err) => return Err(err),
-        };
+        let mut files =
+            match run_git_diff_command(&self.root_path, args, self.whitespace_mode.ignores_all()) {
+                Ok(files) => files,
+                Err(TuicrError::NoChanges) => Vec::new(),
+                Err(err) => return Err(err),
+            };
 
         if include_untracked {
-            append_untracked_cli_diffs(&self.root_path, &mut files, highlighter)?;
+            append_untracked_cli_diffs(&self.root_path, &mut files)?;
         }
         normalize_git_cli_paths(&mut files);
 
@@ -129,9 +122,8 @@ impl GitCliBackend {
             git_source_content_cache(&self.root_path, old_source, &files, LineSide::Old);
         let new_cache =
             git_source_content_cache(&self.root_path, new_source, &files, LineSide::New);
-        enhance_with_full_file_highlight(
+        attach_whole_file_text(
             &mut files,
-            highlighter,
             |path| {
                 read_path_from_git_source_cached(
                     &self.root_path,
@@ -203,17 +195,16 @@ impl VcsBackend for GitCliBackend {
         true
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         self.get_cli_diff(
             strings(["diff", "--no-ext-diff", "--binary", "HEAD", "--"]),
             true,
             GitContentSource::Revision("HEAD"),
             GitContentSource::Workdir,
-            highlighter,
         )
     }
 
-    fn get_staged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_staged_diff(&self) -> Result<Vec<DiffFile>> {
         let old_source =
             if run_git_command(&self.root_path, &["rev-parse", "--verify", "HEAD"]).is_ok() {
                 GitContentSource::Revision("HEAD")
@@ -225,17 +216,15 @@ impl VcsBackend for GitCliBackend {
             false,
             old_source,
             GitContentSource::Index,
-            highlighter,
         )
     }
 
-    fn get_unstaged_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_unstaged_diff(&self) -> Result<Vec<DiffFile>> {
         self.get_cli_diff(
             strings(["diff", "--no-ext-diff", "--binary", "--"]),
             true,
             GitContentSource::Index,
             GitContentSource::Workdir,
-            highlighter,
         )
     }
 
@@ -330,7 +319,6 @@ impl VcsBackend for GitCliBackend {
     fn get_commit_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         if revision_range.commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
@@ -358,7 +346,6 @@ impl VcsBackend for GitCliBackend {
             false,
             GitContentSource::Revision(&base_rev),
             GitContentSource::Revision(&newest_rev),
-            highlighter,
         )
     }
 
@@ -379,11 +366,7 @@ impl VcsBackend for GitCliBackend {
         Ok(parse_commit_records(&output, &branch_tip_names))
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -400,7 +383,6 @@ impl VcsBackend for GitCliBackend {
             true,
             GitContentSource::Revision(&base_rev),
             GitContentSource::Workdir,
-            highlighter,
         )
     }
 
@@ -623,7 +605,6 @@ fn run_git_diff_command(
     workdir: &Path,
     args: Vec<String>,
     suppress_header_only_content_changes: bool,
-    highlighter: &SyntaxHighlighter,
 ) -> Result<Vec<DiffFile>> {
     let output = run_git_diff_bytes(workdir, &args, &[])?;
     let patches = match parse_raw_patch_output(&output) {
@@ -633,7 +614,7 @@ fn run_git_diff_command(
         }
         Err(error) => return Err(error),
     };
-    diff_parser::parse_file_patches(patches, highlighter)
+    diff_parser::parse_file_patches(patches)
 }
 
 fn run_git_diff_bytes(workdir: &Path, args: &[String], pathspecs: &[&Path]) -> Result<Vec<u8>> {
@@ -724,16 +705,12 @@ fn parse_whitespace_filtered_patches(
     Ok(patches)
 }
 
-fn append_untracked_cli_diffs(
-    workdir: &Path,
-    files: &mut Vec<DiffFile>,
-    highlighter: &SyntaxHighlighter,
-) -> Result<usize> {
+fn append_untracked_cli_diffs(workdir: &Path, files: &mut Vec<DiffFile>) -> Result<usize> {
     let pathspecs = sparse_checkout_untracked_pathspecs(workdir)?;
     let previous_len = files.len();
     for_each_untracked_path(workdir, &pathspecs, |path| {
         let full_path = workdir.join(&path);
-        let Some(file) = build_untracked_diff_file(&path, &full_path, highlighter) else {
+        let Some(file) = build_untracked_diff_file(&path, &full_path) else {
             return Ok(());
         };
         files.push(file);
@@ -784,11 +761,7 @@ fn is_simple_sparse_path(pattern: &str) -> bool {
         && !pattern.contains('\\')
 }
 
-fn build_untracked_diff_file(
-    path: &Path,
-    full_path: &Path,
-    highlighter: &SyntaxHighlighter,
-) -> Option<DiffFile> {
+fn build_untracked_diff_file(path: &Path, full_path: &Path) -> Option<DiffFile> {
     let metadata = full_path.metadata().ok()?;
     if metadata.len() > MAX_UNTRACKED_FILE_SIZE {
         return Some(diff_file_without_hunks(path, false, true));
@@ -809,7 +782,6 @@ fn build_untracked_diff_file(
         return Some(diff_file_without_hunks(path, false, false));
     }
 
-    let highlighted = highlighter.highlight_file_lines(path, &lines);
     let diff_lines: Vec<DiffLine> = lines
         .into_iter()
         .enumerate()
@@ -818,13 +790,7 @@ fn build_untracked_diff_file(
             content,
             old_lineno: None,
             new_lineno: Some((idx + 1) as u32),
-            highlighted_spans: highlighter.highlighted_line_for_diff_with_background(
-                None,
-                highlighted.as_deref(),
-                None,
-                Some(idx),
-                LineOrigin::Addition,
-            ),
+            highlighted_spans: None,
         })
         .collect();
 
@@ -836,6 +802,7 @@ fn build_untracked_diff_file(
         old_count: 0,
         new_start: 1,
         new_count,
+        highlight: HunkHighlight::default(),
     }];
     let content_hash = DiffFile::compute_content_hash(&hunks);
 
@@ -847,6 +814,7 @@ fn build_untracked_diff_file(
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     })
 }
@@ -860,6 +828,7 @@ fn diff_file_without_hunks(path: &Path, is_binary: bool, is_too_large: bool) -> 
         is_binary,
         is_too_large,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash: 0,
     }
 }
@@ -1514,13 +1483,10 @@ mod tests {
         let (_temp_dir, backend, ids) = setup_sparse_index_repo();
 
         let files = backend
-            .get_commit_range_diff(
-                &ResolvedRevisionRange::from_owned_commit_ids(
-                    vec![ids[1].clone()],
-                    RevisionDiffTarget::CommitList,
-                ),
-                &SyntaxHighlighter::default(),
-            )
+            .get_commit_range_diff(&ResolvedRevisionRange::from_owned_commit_ids(
+                vec![ids[1].clone()],
+                RevisionDiffTarget::CommitList,
+            ))
             .expect("failed to get sparse commit range diff");
 
         assert_eq!(files.len(), 1);
@@ -1535,7 +1501,7 @@ mod tests {
         let (_temp_dir, backend, _ids) = setup_sparse_index_repo();
 
         assert!(matches!(
-            backend.get_working_tree_diff(&SyntaxHighlighter::default()),
+            backend.get_working_tree_diff(),
             Err(TuicrError::NoChanges)
         ));
     }
@@ -1549,7 +1515,7 @@ mod tests {
         write_file(workdir, "hidden/outside.txt", "outside cone\n");
 
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("failed to get sparse working tree diff");
 
         let paths: Vec<_> = files
@@ -1592,7 +1558,7 @@ mod tests {
         let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
             .expect("failed to discover CLI backend");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("failed to parse structured Git diff");
 
         assert!(files.iter().any(|file| {
@@ -1627,7 +1593,7 @@ mod tests {
             .stage_file(Path::new("keep/file.txt"))
             .expect("failed to stage file");
         let files = backend
-            .get_staged_diff(&SyntaxHighlighter::default())
+            .get_staged_diff()
             .expect("failed to get sparse staged diff");
 
         assert_eq!(files.len(), 1);
@@ -1711,37 +1677,28 @@ mod tests {
     #[test]
     fn cli_diff_outputs_match_libgit2_for_shared_git_operations() {
         let (_temp_dir, cli_backend, repo, ids) = setup_standard_parity_repo();
-        let highlighter = SyntaxHighlighter::default();
 
         assert_eq!(
-            summarize_files(cli_backend.get_working_tree_diff(&highlighter).unwrap()),
+            summarize_files(cli_backend.get_working_tree_diff().unwrap()),
             summarize_files(
-                diff::get_working_tree_diff(&repo, DiffWhitespaceMode::Normal, &highlighter)
-                    .unwrap()
+                diff::get_working_tree_diff(&repo, DiffWhitespaceMode::Normal).unwrap()
             )
         );
         assert_eq!(
-            summarize_files(cli_backend.get_staged_diff(&highlighter).unwrap()),
-            summarize_files(
-                diff::get_staged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter).unwrap()
-            )
+            summarize_files(cli_backend.get_staged_diff().unwrap()),
+            summarize_files(diff::get_staged_diff(&repo, DiffWhitespaceMode::Normal).unwrap())
         );
         assert_eq!(
-            summarize_files(cli_backend.get_unstaged_diff(&highlighter).unwrap()),
-            summarize_files(
-                diff::get_unstaged_diff(&repo, DiffWhitespaceMode::Normal, &highlighter).unwrap()
-            )
+            summarize_files(cli_backend.get_unstaged_diff().unwrap()),
+            summarize_files(diff::get_unstaged_diff(&repo, DiffWhitespaceMode::Normal).unwrap())
         );
         assert_eq!(
             summarize_files(
                 cli_backend
-                    .get_commit_range_diff(
-                        &ResolvedRevisionRange::from_owned_commit_ids(
-                            vec![ids[1].clone()],
-                            RevisionDiffTarget::CommitList,
-                        ),
-                        &highlighter
-                    )
+                    .get_commit_range_diff(&ResolvedRevisionRange::from_owned_commit_ids(
+                        vec![ids[1].clone()],
+                        RevisionDiffTarget::CommitList,
+                    ),)
                     .unwrap()
             ),
             summarize_files(
@@ -1752,7 +1709,6 @@ mod tests {
                         RevisionDiffTarget::CommitList,
                     ),
                     DiffWhitespaceMode::Normal,
-                    &highlighter,
                 )
                 .unwrap()
             )
@@ -1760,7 +1716,7 @@ mod tests {
         assert_eq!(
             summarize_files(
                 cli_backend
-                    .get_working_tree_with_commits_diff(&[ids[1].clone()], &highlighter)
+                    .get_working_tree_with_commits_diff(&[ids[1].clone()])
                     .unwrap()
             ),
             summarize_files(
@@ -1768,7 +1724,6 @@ mod tests {
                     &repo,
                     &[ids[1].clone()],
                     DiffWhitespaceMode::Normal,
-                    &highlighter,
                 )
                 .unwrap()
             )
@@ -1813,7 +1768,6 @@ mod tests {
         // endpoints, not the first selected commit's parent.
         // Otherwise changes already present in the left ref appear in review.
         let (_temp_dir, cli_backend, repo, left_id, right_id) = setup_merge_range_repo();
-        let highlighter = SyntaxHighlighter::default();
         let revisions = format!("{left_id}..{right_id}");
 
         let cli_range = cli_backend
@@ -1827,7 +1781,7 @@ mod tests {
             }
         );
         let cli_files = cli_backend
-            .get_commit_range_diff(&cli_range, &highlighter)
+            .get_commit_range_diff(&cli_range)
             .expect("failed to get cli range diff");
 
         let libgit2_range =
@@ -1839,13 +1793,9 @@ mod tests {
                 head: right_id,
             }
         );
-        let libgit2_files = diff::get_commit_range_diff(
-            &repo,
-            &libgit2_range,
-            DiffWhitespaceMode::Normal,
-            &highlighter,
-        )
-        .expect("failed to get libgit2 range diff");
+        let libgit2_files =
+            diff::get_commit_range_diff(&repo, &libgit2_range, DiffWhitespaceMode::Normal)
+                .expect("failed to get libgit2 range diff");
 
         assert_eq!(
             summarize_files(cli_files),
@@ -1883,13 +1833,13 @@ mod tests {
 
         write_file(workdir, "file.txt", " alpha \n beta\n");
         assert!(matches!(
-            backend.get_working_tree_diff(&SyntaxHighlighter::default()),
+            backend.get_working_tree_diff(),
             Err(TuicrError::NoChanges)
         ));
 
         write_file(workdir, "file.txt", " alpha \ngamma\n");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
     }
@@ -1915,7 +1865,7 @@ mod tests {
         let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::IgnoreAll)
             .expect("failed to discover cli backend");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("substantive edit should produce a diff");
 
         assert_eq!(files.len(), 1);

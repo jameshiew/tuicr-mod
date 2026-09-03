@@ -7,7 +7,6 @@ use chrono::{TimeZone, Utc};
 
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
-use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
     FileMetadata, pair_metadata_with_patch, path_buf_from_bytes, split_patch_blocks,
@@ -17,7 +16,7 @@ use crate::vcs::traits::{
     VcsType,
 };
 use crate::vcs::{
-    BATCH_BOUNDARY, apply_container_full_file_highlight, parse_batched_files, slice_context_lines,
+    BATCH_BOUNDARY, attach_container_whole_file_text, parse_batched_files, slice_context_lines,
 };
 
 /// Parse an hg description into (summary, optional body).
@@ -100,11 +99,7 @@ impl HgBackend {
         Cow::Owned(args_with_whitespace)
     }
 
-    fn load_diff(
-        &self,
-        diff_args: &[&str],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn load_diff(&self, diff_args: &[&str]) -> Result<Vec<DiffFile>> {
         let args = self.diff_args(diff_args);
         let mut patch_args: Vec<&str> = args.iter().copied().collect();
         patch_args.insert(1, "--git");
@@ -145,7 +140,7 @@ impl HgBackend {
             patches
         };
 
-        diff_parser::parse_file_patches(patches, highlighter)
+        diff_parser::parse_file_patches(patches)
     }
 }
 
@@ -257,14 +252,13 @@ impl VcsBackend for HgBackend {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
-        let mut files = self.load_diff(&["diff"], highlighter)?;
-        apply_container_full_file_highlight(
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
+        let mut files = self.load_diff(&["diff"])?;
+        attach_container_whole_file_text(
             &self.info.root_path,
             ".",
             None,
             &mut files,
-            highlighter,
             hg_cat_batch,
         )?;
         Ok(files)
@@ -400,7 +394,6 @@ impl VcsBackend for HgBackend {
     fn get_commit_range_diff(
         &self,
         revision_range: &ResolvedRevisionRange<'_>,
-        highlighter: &SyntaxHighlighter,
     ) -> Result<Vec<DiffFile>> {
         let commit_ids = &revision_range.commit_ids;
         if commit_ids.is_empty() {
@@ -447,13 +440,12 @@ impl VcsBackend for HgBackend {
         };
 
         let diff_args = ["diff", "-r", &from_rev, "-r", newest_short];
-        let mut files = self.load_diff(&diff_args, highlighter)?;
-        apply_container_full_file_highlight(
+        let mut files = self.load_diff(&diff_args)?;
+        attach_container_whole_file_text(
             &self.info.root_path,
             &from_rev,
             Some(newest_short),
             &mut files,
-            highlighter,
             hg_cat_batch,
         )?;
         Ok(files)
@@ -520,11 +512,7 @@ impl VcsBackend for HgBackend {
         Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
-    fn get_working_tree_with_commits_diff(
-        &self,
-        commit_ids: &[String],
-        highlighter: &SyntaxHighlighter,
-    ) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_with_commits_diff(&self, commit_ids: &[String]) -> Result<Vec<DiffFile>> {
         if commit_ids.is_empty() {
             return Err(TuicrError::NoChanges);
         }
@@ -555,13 +543,12 @@ impl VcsBackend for HgBackend {
         };
 
         let diff_args = ["diff", "-r", &from_rev];
-        let mut files = self.load_diff(&diff_args, highlighter)?;
-        apply_container_full_file_highlight(
+        let mut files = self.load_diff(&diff_args)?;
+        attach_container_whole_file_text(
             &self.info.root_path,
             &from_rev,
             None,
             &mut files,
-            highlighter,
             hg_cat_batch,
         )?;
         Ok(files)
@@ -744,9 +731,7 @@ mod tests {
         assert_eq!(backend.info().root_path, expected_path);
         assert_eq!(backend.info().vcs_type, VcsType::Mercurial);
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -780,7 +765,7 @@ mod tests {
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create hg backend");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("structured hg diff should parse");
 
         assert_eq!(files.len(), 1);
@@ -801,14 +786,14 @@ mod tests {
                 .expect("Failed to create hg backend");
 
         assert!(matches!(
-            backend.get_working_tree_diff(&SyntaxHighlighter::default()),
+            backend.get_working_tree_diff(),
             Err(TuicrError::NoChanges)
         ));
 
         fs::write(temp.path().join("hello.txt"), " hello ship \n")
             .expect("Failed to write non-whitespace edit");
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
     }
@@ -845,20 +830,14 @@ mod tests {
             .expect("Expected whitespace commit");
 
         assert!(matches!(
-            backend.get_working_tree_with_commits_diff(
-                std::slice::from_ref(&whitespace_commit.id),
-                &SyntaxHighlighter::default()
-            ),
+            backend.get_working_tree_with_commits_diff(std::slice::from_ref(&whitespace_commit.id)),
             Err(TuicrError::NoChanges)
         ));
 
         fs::write(temp.path().join("hello.txt"), " hello ship \n")
             .expect("Failed to write non-whitespace edit");
         let files = backend
-            .get_working_tree_with_commits_diff(
-                std::slice::from_ref(&whitespace_commit.id),
-                &SyntaxHighlighter::default(),
-            )
+            .get_working_tree_with_commits_diff(std::slice::from_ref(&whitespace_commit.id))
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
     }
@@ -987,13 +966,11 @@ mod tests {
 
         // Get diff for the last two commits (Second and Third)
         let commit_ids = vec![commits[1].id.clone(), commits[0].id.clone()];
-        let diff_result = backend.get_commit_range_diff(
-            &ResolvedRevisionRange::from_owned_commit_ids(
+        let diff_result =
+            backend.get_commit_range_diff(&ResolvedRevisionRange::from_owned_commit_ids(
                 commit_ids,
                 RevisionDiffTarget::CommitList,
-            ),
-            &SyntaxHighlighter::default(),
-        );
+            ));
 
         // Note: Sapling (Meta's hg fork) may fail with "id_dag_snapshot()" error
         // in certain temporary directory configurations. Skip the test in that case.
@@ -1077,9 +1054,7 @@ mod tests {
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         // hg should show the rename
         assert!(!files.is_empty(), "Expected at least one file change");
@@ -1150,9 +1125,7 @@ mod tests {
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert!(!files.is_empty(), "Expected at least one file change");
 
@@ -1210,9 +1183,7 @@ mod tests {
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 
@@ -1324,7 +1295,7 @@ mod tests {
         // The batched `hg cat` behind container highlighting must resolve the
         // name verbatim rather than treating `re:` as a regex pattern.
         let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
+            .get_working_tree_diff()
             .expect("diff should succeed for a pattern-like file name");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].new_path.as_deref(), Some(rel.as_path()));
@@ -1350,10 +1321,13 @@ mod tests {
 
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create hg backend");
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let mut files = backend.get_working_tree_diff().expect("Failed to get diff");
         assert_eq!(files.len(), 1);
+        assert!(
+            files[0].whole_file_text.is_some(),
+            "container file should carry both sides for the lazy highlighter"
+        );
+        crate::syntax::SyntaxHighlighter::default().highlight_files_fully(&mut files);
 
         let changed_lines: Vec<_> = files[0].hunks[0]
             .lines
@@ -1402,9 +1376,7 @@ mod tests {
         let backend = HgBackend::from_path(temp.path().to_path_buf(), DiffWhitespaceMode::Normal)
             .expect("Failed to create hg backend");
 
-        let files = backend
-            .get_working_tree_diff(&SyntaxHighlighter::default())
-            .expect("Failed to get diff");
+        let files = backend.get_working_tree_diff().expect("Failed to get diff");
 
         assert_eq!(files.len(), 1, "Expected one file");
 

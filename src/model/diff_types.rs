@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use crate::hash::Fnv1aHasher;
 use crate::model::comment::LineSide;
+use crate::syntax::HunkHighlight;
 
 /// Backend-provided file metadata paired with that file's opaque patch text.
 ///
@@ -74,8 +75,9 @@ pub struct DiffLine {
     pub content: String,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
-    /// Optional syntax-highlighted spans for this line
-    /// If None, use the default diff coloring
+    /// Syntax-highlighted spans for this line, filled in lazily as the line
+    /// comes into view (see `DiffHunk::highlight`). `None` until then, or
+    /// when no grammar matched, in which case the default diff coloring is used.
     pub highlighted_spans: Option<Vec<(Style, String)>>,
 }
 
@@ -93,6 +95,36 @@ pub struct DiffHunk {
     pub new_start: u32,
     /// Number of lines from the new file in this hunk
     pub new_count: u32,
+    /// How far syntax highlighting has progressed through `lines`.
+    pub highlight: HunkHighlight,
+}
+
+/// Whole-file text on each side of a diff, kept only for grammars that need
+/// the full file in scope (see `syntax::needs_full_file_highlight`). The
+/// lazy highlighter consumes and drops it the first time the file is shown.
+#[derive(Debug, Clone, Default)]
+pub struct WholeFileText {
+    pub old: Option<String>,
+    pub new: Option<String>,
+}
+
+impl WholeFileText {
+    /// Files larger than this skip whole-file highlighting and stay plain.
+    /// Keeps a runaway-cost ceiling on diffs that include huge generated
+    /// artefacts (lockfiles, vendored bundles, fixtures).
+    pub const MAX_BYTES: usize = 1024 * 1024;
+
+    /// Keep `content` only when it is small enough and not binary.
+    pub fn accept(content: Option<String>) -> Option<String> {
+        content.filter(|c| c.len() <= Self::MAX_BYTES && !c.as_bytes().contains(&0u8))
+    }
+
+    /// `None` when neither side is available, so nothing is retained.
+    pub fn from_sides(old: Option<String>, new: Option<String>) -> Option<Self> {
+        let old = Self::accept(old);
+        let new = Self::accept(new);
+        (old.is_some() || new.is_some()).then_some(Self { old, new })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +137,8 @@ pub struct DiffFile {
     pub is_too_large: bool,
     pub is_commit_message: bool,
     pub content_hash: u64,
+    /// Present only for container-grammar files, until first highlighted.
+    pub whole_file_text: Option<WholeFileText>,
 }
 
 impl DiffHunk {

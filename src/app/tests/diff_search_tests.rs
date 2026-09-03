@@ -8,10 +8,7 @@ impl VcsBackend for StubVcs {
     fn info(&self) -> &VcsInfo {
         &self.0
     }
-    fn get_working_tree_diff(
-        &self,
-        _hl: &crate::syntax::SyntaxHighlighter,
-    ) -> crate::error::Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> crate::error::Result<Vec<DiffFile>> {
         Ok(Vec::new())
     }
     fn fetch_context_lines(
@@ -57,6 +54,7 @@ fn file(path: &str, contents: &[&str]) -> DiffFile {
         old_count: 0,
         new_start: 1,
         new_count: contents.len() as u32,
+        highlight: Default::default(),
     }];
     let content_hash = DiffFile::compute_content_hash(&hunks);
     DiffFile {
@@ -67,6 +65,7 @@ fn file(path: &str, contents: &[&str]) -> DiffFile {
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     }
 }

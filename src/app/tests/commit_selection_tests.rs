@@ -11,7 +11,7 @@ impl VcsBackend for DummyVcs {
         &self.info
     }
 
-    fn get_working_tree_diff(&self, _highlighter: &SyntaxHighlighter) -> Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> Result<Vec<DiffFile>> {
         Err(TuicrError::NoChanges)
     }
 
@@ -279,6 +279,7 @@ fn commit_only_file(path: &Path, hunks: Vec<DiffHunk>) -> DiffFile {
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash: 7,
     }
 }
@@ -297,6 +298,7 @@ fn one_line_hunk() -> DiffHunk {
         old_count: 1,
         new_start: 1,
         new_count: 1,
+        highlight: Default::default(),
     }
 }
 

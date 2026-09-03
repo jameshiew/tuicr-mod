@@ -9,10 +9,7 @@ impl VcsBackend for StubVcs {
     fn info(&self) -> &VcsInfo {
         &self.0
     }
-    fn get_working_tree_diff(
-        &self,
-        _hl: &crate::syntax::SyntaxHighlighter,
-    ) -> crate::error::Result<Vec<DiffFile>> {
+    fn get_working_tree_diff(&self) -> crate::error::Result<Vec<DiffFile>> {
         Ok(Vec::new())
     }
     fn fetch_context_lines(
@@ -58,6 +55,7 @@ fn hunk() -> DiffHunk {
         old_count: 1,
         new_start: 1,
         new_count: 2,
+        highlight: Default::default(),
     }
 }
 
@@ -72,6 +70,7 @@ fn file(path: &str) -> DiffFile {
         is_binary: false,
         is_too_large: false,
         is_commit_message: false,
+        whole_file_text: None,
         content_hash,
     }
 }

@@ -165,6 +165,7 @@ pub(super) fn diff_visible_range(app: &App, inner: Rect) -> (usize, usize) {
 }
 
 pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.highlight_visible_lines(area.height as usize);
     match app.diff_view_mode {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),
         DiffViewMode::SideBySide => render_side_by_side_diff(frame, app, area),
