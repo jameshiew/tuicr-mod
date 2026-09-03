@@ -1,12 +1,12 @@
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     text::Line,
     widgets::{Block, Borders, Paragraph},
 };
 
 use crate::app::{App, FocusedPanel};
-use crate::ui::commit_row::{CommitRowSpec, render_commit_row};
+use crate::ui::commit_row::{CommitRowSpec, render_commit_header, render_commit_row};
 use crate::ui::styles;
 
 pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -22,8 +22,20 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    app.commit_list_viewport_height = inner.height as usize;
-    app.commit_list_inner_area = Some(inner);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    let header_area = chunks[0];
+    let rows_area = chunks[1];
+
+    frame.render_widget(
+        Paragraph::new(render_commit_header(inner.width, theme)).style(styles::panel_style(theme)),
+        header_area,
+    );
+
+    app.commit_list_viewport_height = rows_area.height as usize;
+    app.commit_list_inner_area = Some(rows_area);
 
     // Rows are built in data order (index into newest-first `review_commits`),
     // then reversed for ascending display so the oldest commit sits on top.
@@ -34,7 +46,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
         .map(|(i, commit)| {
             render_commit_row(&CommitRowSpec {
                 commit,
-                available_width: inner.width,
+                available_width: rows_area.width,
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 is_reviewed: false,
@@ -43,7 +55,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
         })
         .collect();
 
-    let height = inner.height as usize;
+    let height = rows_area.height as usize;
     let n = app.review_commits.len();
     if app.commits_ascending() {
         items.reverse();
@@ -72,6 +84,6 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
 
     frame.render_widget(
         Paragraph::new(visible_items).style(styles::panel_style(theme)),
-        inner,
+        rows_area,
     );
 }

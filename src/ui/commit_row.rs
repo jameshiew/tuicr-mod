@@ -1,10 +1,10 @@
 //! Shared commit-row rendering used by both the fullscreen review-target
 //! selector and the inline commit selector shown above the diff. Keeps the
-//! row layout (cursor arrow, range bar, checkbox, reviewed marker, hash,
-//! branch chip, summary, author/date) consistent across surfaces.
+//! row layout (cursor arrow, range bar, checkbox, reviewed marker, commit,
+//! branch, description, author, and age) consistent across surfaces.
 
 use chrono::{DateTime, Utc};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::app::{STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
@@ -20,16 +20,16 @@ pub const UNSELECTED_BOX_GLYPH: &str = "\u{25a2}"; // ▢
 pub const REVIEWED_GLYPH: &str = "\u{2713}"; // ✓
 pub const REVIEWED_LABEL: &str = "✓ ";
 
-// Baseline column widths preserve the compact layout. Narrow rows shrink both
-// columns proportionally; wider rows give one third of their surplus to the
-// branch and two thirds to the commit summary.
+// Baseline widths preserve the compact layout. Narrow rows shrink flexible
+// columns proportionally. Wider rows expand author and branch before description.
 const COMPACT_BRANCH_COL_WIDTH: usize = 16;
 const COMPACT_SUMMARY_COL_WIDTH: usize = 50;
-const AUTHOR_COL_WIDTH: usize = 12;
+const COMPACT_AUTHOR_COL_WIDTH: usize = 28;
+const MAX_AUTHOR_COL_WIDTH: usize = 40;
+const MAX_BRANCH_COL_WIDTH: usize = 32;
 const CONTROL_COL_WIDTH: usize = 8;
-const HASH_COL_WIDTH: usize = 8;
+const HASH_COL_WIDTH: usize = 13;
 const RELATIVE_DATE_COL_WIDTH: usize = 8; // "just now"
-const METADATA_COL_WIDTH: usize = 2 + AUTHOR_COL_WIDTH + 3 + RELATIVE_DATE_COL_WIDTH;
 
 pub struct CommitRowSpec<'a> {
     pub commit: &'a CommitInfo,
@@ -38,6 +38,35 @@ pub struct CommitRowSpec<'a> {
     pub is_selected: bool,
     pub is_reviewed: bool,
     pub theme: &'a Theme,
+}
+
+pub fn render_commit_header(available_width: u16, theme: &Theme) -> Line<'static> {
+    let style = Style::default()
+        .fg(theme.fg_dim)
+        .add_modifier(Modifier::BOLD);
+    let (branch_col_width, summary_col_width, author_col_width) =
+        commit_column_widths(available_width as usize, HASH_COL_WIDTH);
+
+    Line::from(vec![
+        Span::raw(" ".repeat(CONTROL_COL_WIDTH)),
+        Span::styled(
+            format!("{} ", truncate_or_pad_column("Commit", HASH_COL_WIDTH - 1)),
+            style,
+        ),
+        Span::styled(truncate_or_pad_column("Branch", branch_col_width), style),
+        Span::styled(
+            truncate_or_pad_column("Description", summary_col_width),
+            style,
+        ),
+        Span::styled(
+            format!(
+                "  {} \u{00b7} {}",
+                truncate_or_pad("Author", author_col_width),
+                "Age"
+            ),
+            style,
+        ),
+    ])
 }
 
 pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
@@ -95,31 +124,38 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
 
     if spec.commit.id == STAGED_SELECTION_ID || spec.commit.id == UNSTAGED_SELECTION_ID {
         let tag = if spec.commit.id == STAGED_SELECTION_ID {
-            " \u{00b7} staged \u{00b7}   "
+            "staged"
         } else {
-            " \u{00b7} unstaged \u{00b7} "
+            "unstaged"
         };
-        spans.push(Span::styled(tag, styles::pseudo_commit_tag_style(theme)));
-        spans.push(Span::styled(spec.commit.summary.clone(), row_text_style));
+        let (branch_col_width, summary_col_width, _) =
+            commit_column_widths(spec.available_width as usize, HASH_COL_WIDTH);
+        spans.push(Span::styled(
+            format!("{} ", truncate_or_pad_column(tag, HASH_COL_WIDTH - 1)),
+            styles::pseudo_commit_tag_style(theme),
+        ));
+        spans.push(Span::raw(" ".repeat(branch_col_width)));
+        spans.push(Span::styled(
+            truncate_or_pad_column(&spec.commit.summary, summary_col_width),
+            row_text_style,
+        ));
         return Line::from(spans);
     }
 
-    let hash_content_width = (HASH_COL_WIDTH - 1).max(spec.commit.short_id.chars().count());
     let hash = format!(
         "{} ",
-        truncate_or_pad_column(&spec.commit.short_id, hash_content_width)
+        truncate_or_pad_column(&spec.commit.short_id, HASH_COL_WIDTH - 1)
     );
     spans.push(Span::styled(hash, styles::hash_style(theme)));
 
+    let (branch_col_width, summary_col_width, author_col_width) =
+        commit_column_widths(spec.available_width as usize, HASH_COL_WIDTH);
     let when = format_relative_short(&spec.commit.time);
     let metadata = format!(
         "  {} \u{00b7} {}",
-        truncate_or_pad(&spec.commit.author, AUTHOR_COL_WIDTH),
+        truncate_or_pad(&spec.commit.author, author_col_width),
         when
     );
-    let hash_col_width = hash_content_width + 1;
-    let (branch_col_width, summary_col_width) =
-        commit_column_widths(spec.available_width as usize, hash_col_width);
 
     // Branch column: always branch_col_width cells. With a branch we render
     // `[<name>]` padded out with trailing spaces; without one we render
@@ -150,21 +186,30 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     Line::from(spans)
 }
 
-fn commit_column_widths(available_width: usize, hash_col_width: usize) -> (usize, usize) {
-    let fixed_width = CONTROL_COL_WIDTH + hash_col_width + METADATA_COL_WIDTH;
+fn commit_column_widths(available_width: usize, hash_col_width: usize) -> (usize, usize, usize) {
+    let fixed_width = CONTROL_COL_WIDTH + hash_col_width + 2 + 3 + RELATIVE_DATE_COL_WIDTH;
     let budget = available_width.saturating_sub(fixed_width);
-    let compact_width = COMPACT_BRANCH_COL_WIDTH + COMPACT_SUMMARY_COL_WIDTH;
+    let compact_width =
+        COMPACT_BRANCH_COL_WIDTH + COMPACT_SUMMARY_COL_WIDTH + COMPACT_AUTHOR_COL_WIDTH;
 
     if budget <= compact_width {
         let branch_width = budget * COMPACT_BRANCH_COL_WIDTH / compact_width;
-        return (branch_width, budget - branch_width);
+        let author_width = budget * COMPACT_AUTHOR_COL_WIDTH / compact_width;
+        return (
+            branch_width,
+            budget - branch_width - author_width,
+            author_width,
+        );
     }
 
     let surplus = budget - compact_width;
-    let branch_surplus = surplus / 3;
+    let author_surplus = surplus.min(MAX_AUTHOR_COL_WIDTH - COMPACT_AUTHOR_COL_WIDTH);
+    let branch_surplus =
+        (surplus - author_surplus).min(MAX_BRANCH_COL_WIDTH - COMPACT_BRANCH_COL_WIDTH);
     (
         COMPACT_BRANCH_COL_WIDTH + branch_surplus,
-        COMPACT_SUMMARY_COL_WIDTH + surplus - branch_surplus,
+        COMPACT_SUMMARY_COL_WIDTH + surplus - author_surplus - branch_surplus,
+        COMPACT_AUTHOR_COL_WIDTH + author_surplus,
     )
 }
 
@@ -230,11 +275,54 @@ mod tests {
             .collect::<String>()
     }
 
+    fn char_position(text: &str, needle: &str) -> Option<usize> {
+        text.find(needle)
+            .map(|byte_index| text[..byte_index].chars().count())
+    }
+
     #[test]
-    fn should_preserve_compact_column_widths_and_split_surplus_toward_summary() {
-        assert_eq!(commit_column_widths(107, HASH_COL_WIDTH), (16, 50));
-        assert_eq!(commit_column_widths(137, HASH_COL_WIDTH), (26, 70));
-        assert_eq!(commit_column_widths(8, HASH_COL_WIDTH), (0, 0));
+    fn should_resize_commit_columns_responsively() {
+        assert_eq!(commit_column_widths(107, HASH_COL_WIDTH), (12, 40, 21));
+        assert_eq!(commit_column_widths(128, HASH_COL_WIDTH), (16, 50, 28));
+        assert_eq!(commit_column_widths(158, HASH_COL_WIDTH), (32, 52, 40));
+        assert_eq!(commit_column_widths(8, HASH_COL_WIDTH), (0, 0, 0));
+    }
+
+    #[test]
+    fn should_align_table_headings_with_commit_values() {
+        let theme = Theme::dark();
+        let mut c = commit(
+            "abcdef1234567890",
+            "A descriptive commit summary",
+            Some("feature/table"),
+        );
+        c.short_id = "abcdef123456".to_string();
+        c.author = "noreply@openai.com".to_string();
+        c.time = Utc::now();
+
+        let header = line_text(&render_commit_header(160, &theme));
+        let row = line_text(&render_commit_row(&CommitRowSpec {
+            commit: &c,
+            available_width: 160,
+            is_cursor: false,
+            is_selected: false,
+            is_reviewed: false,
+            theme: &theme,
+        }));
+
+        for (heading, value) in [
+            ("Commit", "abcdef123456"),
+            ("Branch", "[feature/table]"),
+            ("Description", "A descriptive commit summary"),
+            ("Author", "noreply@openai.com"),
+            ("Age", "just now"),
+        ] {
+            assert_eq!(
+                char_position(&header, heading),
+                char_position(&row, value),
+                "column {heading}"
+            );
+        }
     }
 
     #[test]
@@ -367,7 +455,7 @@ mod tests {
         // when
         let line = render_commit_row(&CommitRowSpec {
             commit: &c,
-            available_width: 107,
+            available_width: 128,
             is_cursor: false,
             is_selected: false,
             is_reviewed: false,
@@ -386,7 +474,7 @@ mod tests {
         // when
         let text = line_text(&render_commit_row(&CommitRowSpec {
             commit: &c,
-            available_width: 107,
+            available_width: 128,
             is_cursor: true,
             is_selected: true,
             is_reviewed: true,
@@ -496,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn should_keep_pseudo_commit_content_stable_across_widths() {
+    fn should_keep_pseudo_commits_in_the_table_columns() {
         // given
         let theme = Theme::dark();
         for (id, summary, tag) in [
@@ -505,14 +593,6 @@ mod tests {
         ] {
             let c = commit(id, summary, None);
             // when
-            let narrow = line_text(&render_commit_row(&CommitRowSpec {
-                commit: &c,
-                available_width: 20,
-                is_cursor: false,
-                is_selected: false,
-                is_reviewed: false,
-                theme: &theme,
-            }));
             let wide = line_text(&render_commit_row(&CommitRowSpec {
                 commit: &c,
                 available_width: 160,
@@ -522,9 +602,9 @@ mod tests {
                 theme: &theme,
             }));
             // then
-            assert_eq!(narrow, wide);
             assert!(wide.contains(tag), "got: {wide:?}");
             assert!(wide.contains(summary), "got: {wide:?}");
+            assert!(!wide.contains("alice"), "should drop author: {wide:?}");
         }
     }
 

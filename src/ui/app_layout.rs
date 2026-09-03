@@ -103,7 +103,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
     let content_area = if app.input_mode != InputMode::Summary && app.has_inline_commit_selector() {
-        let selector_height = (app.review_commits.len() as u16 + 2).min(8); // N items + 2 borders, capped
+        let selector_height = (app.review_commits.len() as u16 + 3).min(9);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(selector_height), Constraint::Min(0)])

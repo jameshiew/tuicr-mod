@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::commit_row::{CURSOR_GLYPH, CommitRowSpec, render_commit_row};
+use crate::ui::commit_row::{CURSOR_GLYPH, CommitRowSpec, render_commit_header, render_commit_row};
 use crate::ui::status_bar;
 use crate::ui::styles;
 
@@ -82,9 +82,21 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Update viewport height for scroll calculations
-    app.commit_list_viewport_height = area.height as usize;
-    app.commit_list_inner_area = Some(area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    let header_area = chunks[0];
+    let rows_area = chunks[1];
+
+    frame.render_widget(
+        Paragraph::new(render_commit_header(area.width, &app.theme))
+            .style(styles::panel_style(&app.theme)),
+        header_area,
+    );
+
+    app.commit_list_viewport_height = rows_area.height as usize;
+    app.commit_list_inner_area = Some(rows_area);
 
     let total_commits = app.commit_list.len();
     let visible_count = app.visible_commit_count.min(total_commits);
@@ -97,7 +109,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|(i, commit)| {
             render_commit_row(&CommitRowSpec {
                 commit,
-                available_width: area.width,
+                available_width: rows_area.width,
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 is_reviewed: false,
@@ -117,11 +129,11 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_items: Vec<Line> = items
         .into_iter()
         .skip(app.commit_list_scroll_offset)
-        .take(area.height as usize)
+        .take(rows_area.height as usize)
         .collect();
 
     let list = Paragraph::new(visible_items).style(styles::panel_style(&app.theme));
-    frame.render_widget(list, area);
+    frame.render_widget(list, rows_area);
 }
 
 fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str) -> Line<'a> {
@@ -361,10 +373,30 @@ mod selector_render_snapshot_tests {
         let wide_inline = draw_inline_at(&mut inline_app, 160);
 
         // then
-        assert!(!row_text(&compact_fullscreen, 2).contains("branch-alpha]"));
-        assert!(row_text(&wide_fullscreen, 2).contains("branch-alpha]"));
-        assert!(!row_text(&compact_inline, 1).contains("branch-alpha]"));
-        assert!(row_text(&wide_inline, 1).contains("branch-alpha]"));
+        assert!(!row_text(&compact_fullscreen, 3).contains("branch-alpha]"));
+        assert!(row_text(&wide_fullscreen, 3).contains("branch-alpha]"));
+        assert!(!row_text(&compact_inline, 2).contains("branch-alpha]"));
+        assert!(row_text(&wide_inline, 2).contains("branch-alpha]"));
+    }
+
+    #[test]
+    fn should_render_commit_table_headings_on_both_selectors() {
+        let mut fullscreen_app = make_app(vec![commit(0)]);
+        let mut inline_app = make_app(vec![commit(0)]);
+        inline_app.review_commits = vec![commit(0)];
+        inline_app.input_mode = InputMode::Normal;
+
+        let fullscreen = draw(&mut fullscreen_app);
+        let inline = draw_inline_at(&mut inline_app, 120);
+
+        for heading in ["Commit", "Branch", "Description", "Author", "Age"] {
+            assert!(row_text(&fullscreen, 2).contains(heading));
+            assert!(row_text(&inline, 1).contains(heading));
+        }
+        assert_eq!(fullscreen_app.commit_list_idx_at_screen_row(2), None);
+        assert_eq!(fullscreen_app.commit_list_idx_at_screen_row(3), Some(0));
+        assert_eq!(inline_app.commit_list_idx_at_screen_row(1), None);
+        assert_eq!(inline_app.commit_list_idx_at_screen_row(2), Some(0));
     }
 
     /// True when at least one cell in [x_start, x_end) on row `y` carries
