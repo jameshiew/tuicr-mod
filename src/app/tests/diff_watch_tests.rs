@@ -164,7 +164,19 @@ fn working_tree_request() -> DiffWatchReloadRequest {
 fn deliver(app: &mut App, request: DiffWatchReloadRequest, event: DiffWatchReloadEvent) -> bool {
     let (tx, rx) = mpsc::channel();
     tx.send(event).unwrap();
-    app.diff_watch_reload = Some(DiffWatchReload { request, rx });
+    let target = app.diff_watch_target().unwrap_or(DiffWatchTarget::Review);
+    let commit_limit = match target {
+        DiffWatchTarget::Review => VISIBLE_COMMIT_COUNT,
+        DiffWatchTarget::LocalSelector => {
+            app.loaded_history_commit_count().max(VISIBLE_COMMIT_COUNT)
+        }
+    };
+    app.diff_watch_reload = Some(DiffWatchReload {
+        request,
+        target,
+        commit_limit,
+        rx,
+    });
     app.poll_diff_watch_changes()
 }
 
@@ -180,9 +192,16 @@ fn expire_deadline(app: &mut App) {
 // into behaviour is never exercised.
 // ---------------------------------------------------------------------
 
-/// The maintainer's stated condition for accepting this feature is that it
-/// stays off unless asked for. `0` is how a user turns it back off after
-/// setting it, so that branch has to keep working.
+#[test]
+fn should_enable_diff_watch_by_default() {
+    let app = build_app(vec![], DiffSource::WorkingTree);
+
+    assert_eq!(
+        app.diff_watch_interval,
+        Some(Duration::from_millis(DEFAULT_DIFF_WATCH_INTERVAL_MS))
+    );
+}
+
 #[test]
 fn should_disable_diff_watch_when_interval_is_zero() {
     let mut app = build_app(vec![], DiffSource::WorkingTree);
@@ -215,6 +234,7 @@ fn should_arm_the_next_deadline_when_an_interval_is_set() {
 #[test]
 fn should_not_spawn_when_interval_unset() {
     let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::WorkingTree);
+    app.diff_watch_interval = None;
 
     let redraw = app.poll_diff_watch_changes();
 
@@ -309,6 +329,34 @@ fn should_defer_outside_normal_mode_then_resume() {
     );
 }
 
+#[test]
+fn should_fetch_while_the_local_target_selector_is_open() {
+    let mut app = build_app(vec![], DiffSource::WorkingTree);
+    app.input_mode = InputMode::CommitSelect;
+    app.target_tab = TargetTab::Local;
+    app.diff_watch_interval = Some(Duration::from_millis(500));
+    expire_deadline(&mut app);
+
+    assert_eq!(
+        app.diff_watch_tick(Instant::now()),
+        DiffWatchTick::Fetch(Duration::from_millis(500))
+    );
+}
+
+#[test]
+fn should_defer_while_a_remote_target_tab_is_open() {
+    let mut app = build_app(vec![], DiffSource::WorkingTree);
+    app.input_mode = InputMode::CommitSelect;
+    app.target_tab = TargetTab::PullRequests;
+    app.diff_watch_interval = Some(Duration::from_millis(500));
+    expire_deadline(&mut app);
+
+    assert_eq!(
+        app.diff_watch_tick(Instant::now()),
+        DiffWatchTick::Defer(Duration::from_millis(500))
+    );
+}
+
 /// A second tick landing while a fetch is already running must not spawn
 /// another. Two results racing to apply against a since-changed `diff_files`
 /// is the overlap `apply_diff_files`'s invariant rules out. Mirrors the guard
@@ -326,6 +374,8 @@ fn should_not_spawn_a_second_reload_while_one_is_in_flight() {
     let (_tx, rx) = mpsc::channel();
     app.diff_watch_reload = Some(DiffWatchReload {
         request: in_flight.clone(),
+        target: DiffWatchTarget::Review,
+        commit_limit: VISIBLE_COMMIT_COUNT,
         rx,
     });
 
@@ -351,6 +401,8 @@ fn should_report_a_failure_when_the_worker_panics() {
     let (tx, rx) = mpsc::channel::<DiffWatchReloadEvent>();
     app.diff_watch_reload = Some(DiffWatchReload {
         request: working_tree_request(),
+        target: DiffWatchTarget::Review,
+        commit_limit: VISIBLE_COMMIT_COUNT,
         rx,
     });
 
@@ -394,6 +446,8 @@ fn should_clear_in_flight_state_when_the_worker_dies_without_answering() {
     let (tx, rx) = mpsc::channel::<DiffWatchReloadEvent>();
     app.diff_watch_reload = Some(DiffWatchReload {
         request: working_tree_request(),
+        target: DiffWatchTarget::Review,
+        commit_limit: VISIBLE_COMMIT_COUNT,
         rx,
     });
     drop(tx);
@@ -515,6 +569,36 @@ fn should_apply_and_report_a_changed_result() {
     assert_eq!(
         app.message.as_ref().map(|m| m.content.as_str()),
         Some("Reloaded 1 files")
+    );
+}
+
+#[test]
+fn should_clear_the_diff_when_its_last_change_disappears() {
+    let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::Staged);
+    let request = DiffWatchReloadRequest {
+        diff_source: DiffSource::Staged,
+        commit_selection_range: None,
+    };
+
+    let redraw = deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(Some(Vec::new())),
+            change_status: Some(VcsChangeStatus {
+                staged: false,
+                unstaged: true,
+            }),
+            commits: None,
+        },
+    );
+
+    assert!(redraw);
+    assert!(app.diff_files.is_empty());
+    assert_eq!(
+        app.message.as_ref().map(|message| message.content.as_str()),
+        Some("Reloaded 0 files")
     );
 }
 
@@ -944,10 +1028,10 @@ fn should_be_stale_when_input_mode_left_normal() {
 }
 
 #[test]
-fn should_normalize_no_changes_error_to_silent_none() {
+fn should_normalize_no_changes_error_to_an_empty_diff() {
     match normalize_diff_watch_result(Err(TuicrError::NoChanges)) {
-        Ok(None) => {}
-        other => panic!("expected Ok(None), got {other:?}"),
+        Ok(Some(files)) => assert!(files.is_empty()),
+        other => panic!("expected an empty diff, got {other:?}"),
     }
 }
 
@@ -1066,6 +1150,72 @@ fn watch_commit(id: &str) -> CommitInfo {
         author: "tester".to_string(),
         time: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp"),
     }
+}
+
+#[test]
+fn should_refresh_commits_and_change_rows_in_the_local_target_selector() {
+    let mut app = build_app(vec![], DiffSource::WorkingTree);
+    app.input_mode = InputMode::CommitSelect;
+    app.target_tab = TargetTab::Local;
+    app.commit_list = vec![App::unstaged_commit_entry(), watch_commit("c1")];
+    app.visible_commit_count = app.commit_list.len();
+    app.commit_list_cursor = 1;
+    app.review_commits = vec![watch_commit("review")];
+
+    let request = working_tree_request();
+    let redraw = deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            commits: Some(vec![watch_commit("c2"), watch_commit("c1")]),
+            change_status: Some(VcsChangeStatus {
+                staged: true,
+                unstaged: false,
+            }),
+        },
+    );
+
+    assert!(redraw);
+    assert_eq!(
+        app.commit_list
+            .iter()
+            .map(|commit| commit.summary.as_str())
+            .collect::<Vec<_>>(),
+        ["Staged changes", "commit c2", "commit c1"]
+    );
+    assert_eq!(app.commit_list[app.commit_list_cursor].id, "c1");
+    assert!(app.commit_selection_range.is_none());
+    assert_eq!(app.review_commits, [watch_commit("review")]);
+}
+
+#[test]
+fn should_remove_commits_that_disappear_from_the_local_target_selector() {
+    let mut app = build_app(vec![], DiffSource::WorkingTree);
+    app.input_mode = InputMode::CommitSelect;
+    app.target_tab = TargetTab::Local;
+    app.commit_list = vec![watch_commit("c1")];
+    app.visible_commit_count = 1;
+
+    let request = working_tree_request();
+    let redraw = deliver(
+        &mut app,
+        request.clone(),
+        DiffWatchReloadEvent::Done {
+            request,
+            result: Ok(None),
+            commits: Some(Vec::new()),
+            change_status: Some(VcsChangeStatus {
+                staged: false,
+                unstaged: false,
+            }),
+        },
+    );
+
+    assert!(redraw);
+    assert!(app.commit_list.is_empty());
+    assert_eq!(app.visible_commit_count, 0);
 }
 
 /// The inline commit pane is a startup snapshot. Nothing in the reload path

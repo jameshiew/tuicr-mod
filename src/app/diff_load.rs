@@ -981,7 +981,7 @@ impl App {
         Ok(())
     }
 
-    /// Sets the diff-watch interval. `0` disables it, which is the default.
+    /// Sets the diff-watch interval. `0` disables it.
     pub fn set_diff_watch_interval_ms(&mut self, interval_ms: u64) {
         match interval_ms {
             0 => self.diff_watch_interval = None,
@@ -993,13 +993,18 @@ impl App {
         }
     }
 
+    pub(in crate::app) fn diff_watch_target(&self) -> Option<DiffWatchTarget> {
+        match (self.input_mode, self.target_tab) {
+            (InputMode::Normal, _) => Some(DiffWatchTarget::Review),
+            (InputMode::CommitSelect, TargetTab::Local) => Some(DiffWatchTarget::LocalSelector),
+            _ => None,
+        }
+    }
+
     /// Periodically re-reads the local diff so uncommitted changes appear without
     /// pressing `:e`. Returns `true` when a redraw is needed.
     ///
-    /// Multi-key sequences (`dd`, `zz`, leader chords) are tracked by locals in
-    /// the event loop rather than by `input_mode`, so a tick landing between the
-    /// two keys is not deferred and can move the cursor under the second one.
-    /// The window is one interval and the option is off by default.
+    /// The event loop defers this poll while a multi-key sequence is pending.
     ///
     /// Drains any landed result before evaluating whether to spawn a new one,
     /// so this single entry point covers both halves of the async round trip
@@ -1041,11 +1046,7 @@ impl App {
             return DiffWatchTick::NotDue;
         }
 
-        // Past this point the tick was due, so every answer carries the
-        // interval and the caller advances the deadline. A tick arriving while
-        // the user is composing waits a full interval rather than firing the
-        // moment the editor closes. Mirrors `poll_persisted_session_changes`.
-        if self.input_mode != InputMode::Normal {
+        if self.diff_watch_target().is_none() {
             return DiffWatchTick::Defer(interval);
         }
 
@@ -1071,12 +1072,25 @@ impl App {
     /// `diff_watch_result_is_stale`'s comparison against `self.diff_source`
     /// still matches on landing.
     fn spawn_diff_watch_reload(&mut self) {
+        let Some(target) = self.diff_watch_target() else {
+            return;
+        };
         let request = DiffWatchReloadRequest {
             diff_source: self.diff_source.clone(),
             commit_selection_range: self.commit_selection_range,
         };
         let current = diff_files_fingerprint(&self.diff_files);
         let review_commits = self.review_commits.clone();
+        let commit_limit = match target {
+            DiffWatchTarget::Review => VISIBLE_COMMIT_COUNT,
+            DiffWatchTarget::LocalSelector => {
+                self.loaded_history_commit_count().max(VISIBLE_COMMIT_COUNT)
+            }
+        };
+        let fetch_options = DiffWatchFetchOptions {
+            target,
+            commit_limit,
+        };
         let path_filter = self.path_filter.clone();
         let vcs_open_options = self.vcs_open_options;
         let highlighter = self.theme.syntax_highlighter_arc();
@@ -1084,6 +1098,8 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.diff_watch_reload = Some(DiffWatchReload {
             request: request.clone(),
+            target,
+            commit_limit,
             rx,
         });
         let reporter = DiffWatchReporter::new(tx, request.clone());
@@ -1091,6 +1107,7 @@ impl App {
         std::thread::spawn(move || {
             let outcome = Self::diff_watch_fetch(
                 vcs_open_options,
+                fetch_options,
                 &request,
                 &review_commits,
                 path_filter.as_deref(),
@@ -1114,6 +1131,7 @@ impl App {
     /// is the fingerprint of what was on screen when the fetch was spawned.
     fn diff_watch_fetch(
         vcs_open_options: VcsOpenOptions,
+        fetch_options: DiffWatchFetchOptions,
         request: &DiffWatchReloadRequest,
         review_commits: &[CommitInfo],
         path_filter: Option<&str>,
@@ -1125,19 +1143,28 @@ impl App {
             vcs_open_options.diff_whitespace_mode,
         )?;
         let root_path = &vcs.info().root_path;
-        let fetch_source = Self::narrowed_fetch_source(
-            &request.diff_source,
-            review_commits,
-            request.commit_selection_range,
-        );
-        let files = Self::changed_diff_files_for_source(
-            vcs.as_ref(),
-            root_path,
-            &fetch_source,
-            highlighter,
-            path_filter,
-            current,
-        )?;
+        let files = match fetch_options.target {
+            DiffWatchTarget::LocalSelector => None,
+            DiffWatchTarget::Review => {
+                let fetch_source = Self::narrowed_fetch_source(
+                    &request.diff_source,
+                    review_commits,
+                    request.commit_selection_range,
+                );
+                match Self::changed_diff_files_for_source(
+                    vcs.as_ref(),
+                    root_path,
+                    &fetch_source,
+                    highlighter,
+                    path_filter,
+                    current,
+                ) {
+                    Ok(files) => files,
+                    Err(TuicrError::NoChanges) => Some(Vec::new()),
+                    Err(error) => return Err(error),
+                }
+            }
+        };
         // Runs on the worker, alongside the diff fetch, so the event loop never
         // pays for it.
         //
@@ -1147,7 +1174,7 @@ impl App {
         // would replace a current diff with a warning. The cost is that a
         // commit fetch failing over and over stays silent. The pane just stops
         // updating, which is how it behaved before this feature.
-        let commits = vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT).ok();
+        let commits = vcs.get_recent_commits(0, fetch_options.commit_limit).ok();
         // Same treatment, and for the same reason: staging a file leaves the
         // combined working-tree diff byte-identical, so the fingerprint above
         // reports nothing and only this can tell the pane that a side gained
@@ -1172,6 +1199,8 @@ impl App {
         let Some(in_flight) = self.diff_watch_reload.as_ref() else {
             return false;
         };
+        let target = in_flight.target;
+        let commit_limit = in_flight.commit_limit;
         let event = match in_flight.rx.try_recv() {
             Ok(event) => event,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
@@ -1198,16 +1227,26 @@ impl App {
             commits,
             change_status,
         } = event;
-        if diff_watch_result_is_stale(
-            &request,
-            &self.diff_source,
-            self.commit_selection_range,
-            self.input_mode,
-        ) {
+        if self.diff_watch_target() != Some(target)
+            || target == DiffWatchTarget::LocalSelector
+                && self.loaded_history_commit_count().max(VISIBLE_COMMIT_COUNT) != commit_limit
+            || target == DiffWatchTarget::Review
+                && diff_watch_result_is_stale(
+                    &request,
+                    &self.diff_source,
+                    self.commit_selection_range,
+                    self.input_mode,
+                )
+        {
             return false;
         }
 
-        let commit_pane_changed = self.apply_fetched_commits(commits, change_status);
+        let commit_pane_changed = match target {
+            DiffWatchTarget::Review => self.apply_fetched_commits(commits, change_status),
+            DiffWatchTarget::LocalSelector => {
+                self.apply_fetched_local_targets(commits, change_status)
+            }
+        };
 
         // Every arm yields rather than returning early, so a tick that changed
         // only the commit pane still reports that a redraw is needed.
@@ -1283,6 +1322,57 @@ impl App {
         }
     }
 
+    fn apply_fetched_local_targets(
+        &mut self,
+        fetched: Option<Vec<CommitInfo>>,
+        change_status: Option<VcsChangeStatus>,
+    ) -> bool {
+        let history = fetched.unwrap_or_else(|| {
+            self.commit_list
+                .iter()
+                .skip_while(|commit| Self::is_special_commit(commit))
+                .cloned()
+                .collect()
+        });
+        let rebuilt = Self::commit_pane_rows(&self.commit_list, history, change_status);
+        if rebuilt == self.commit_list {
+            return false;
+        }
+
+        let cursor_row = self
+            .commit_list_cursor
+            .saturating_sub(self.commit_list_scroll_offset);
+        let cursor_id = self
+            .commit_list
+            .get(self.commit_list_cursor)
+            .map(|commit| commit.id.clone());
+        let selection = if self.commit_selection_range.is_none() {
+            None
+        } else {
+            match Self::reanchored_commit_selection(
+                self.commit_selection_range,
+                &self.commit_list,
+                &rebuilt,
+            ) {
+                CommitSelectionAnchor::Moved(range) => range,
+                CommitSelectionAnchor::Lost => None,
+            }
+        };
+
+        self.commit_list = rebuilt;
+        self.visible_commit_count = self.commit_list.len();
+        self.has_more_commit = self.loaded_history_commit_count() >= VISIBLE_COMMIT_COUNT;
+        self.commit_selection_range = selection;
+        let last = self.commit_list.len().saturating_sub(1);
+        self.commit_list_cursor = cursor_id
+            .and_then(|id| self.commit_list.iter().position(|commit| commit.id == id))
+            .unwrap_or(self.commit_list_cursor)
+            .min(last);
+        self.commit_list_scroll_offset =
+            self.commit_list_cursor.saturating_sub(cursor_row).min(last);
+        true
+    }
+
     /// The pane as it would look with `fetched` merged in, or `None` when
     /// there is nothing to install.
     ///
@@ -1300,17 +1390,25 @@ impl App {
         fetched: Option<Vec<CommitInfo>>,
         change_status: Option<VcsChangeStatus>,
     ) -> Option<Vec<CommitInfo>> {
+        Self::rebuilt_commit_rows(&self.review_commits, fetched, change_status)
+    }
+
+    fn rebuilt_commit_rows(
+        current: &[CommitInfo],
+        fetched: Option<Vec<CommitInfo>>,
+        change_status: Option<VcsChangeStatus>,
+    ) -> Option<Vec<CommitInfo>> {
         let history = fetched
             .filter(|commits| !commits.is_empty())
             .unwrap_or_else(|| {
-                self.review_commits
+                current
                     .iter()
                     .skip_while(|commit| Self::is_special_commit(commit))
                     .cloned()
                     .collect()
             });
-        let rebuilt = Self::commit_pane_rows(&self.review_commits, history, change_status);
-        (rebuilt != self.review_commits).then_some(rebuilt)
+        let rebuilt = Self::commit_pane_rows(current, history, change_status);
+        (rebuilt != current).then_some(rebuilt)
     }
 
     /// Installs a refreshed pane and re-derives everything indexed by it.
@@ -1514,6 +1612,12 @@ struct DiffWatchFetched {
     change_status: Option<VcsChangeStatus>,
 }
 
+#[derive(Clone, Copy)]
+struct DiffWatchFetchOptions {
+    target: DiffWatchTarget,
+    commit_limit: usize,
+}
+
 /// Where a commit selection lands in a rebuilt commit pane, if it lands at
 /// all. Carries the answer rather than a yes/no, so a caller cannot install a
 /// rebuilt pane having forgotten to move the range that indexes into it.
@@ -1561,15 +1665,14 @@ pub(in crate::app) fn diff_watch_result_is_stale(
 
 /// Maps the worker's fetch outcome onto the channel's `String`-error wire
 /// type (errors cross threads as text, not `TuicrError`, matching
-/// `PrRangeReloadEvent`). `NoChanges` is folded into `Ok(None)`, because it
-/// means the same thing to a caller as "fetched, nothing changed". Both are a
-/// silent no-op, never a warning.
+/// `PrRangeReloadEvent`). `NoChanges` becomes an empty diff so a source whose
+/// final change disappeared does not leave stale content on screen.
 pub(in crate::app) fn normalize_diff_watch_result(
     result: Result<Option<Vec<DiffFile>>>,
 ) -> std::result::Result<Option<Vec<DiffFile>>, String> {
     match result {
         Ok(files) => Ok(files),
-        Err(TuicrError::NoChanges) => Ok(None),
+        Err(TuicrError::NoChanges) => Ok(Some(Vec::new())),
         Err(e) => Err(e.to_string()),
     }
 }

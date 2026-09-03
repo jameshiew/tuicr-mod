@@ -31,6 +31,7 @@ use crate::vcs::{
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
 pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
+pub const DEFAULT_DIFF_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
@@ -887,10 +888,15 @@ pub struct DiffWatchReloadRequest {
     pub commit_selection_range: Option<(usize, usize)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffWatchTarget {
+    Review,
+    LocalSelector,
+}
+
 /// Result delivered from the diff-watch background thread. `Ok(None)` means
-/// the fetch ran but found nothing new to show (unchanged, or the VCS
-/// reported no changes); `Ok(Some(_))` carries a fully fetched, highlighted
-/// diff ready for `apply_diff_files`.
+/// the diff is unchanged. `Ok(Some(_))` carries a fetched diff ready for
+/// `apply_diff_files`, including an empty diff when all changes disappear.
 #[derive(Debug)]
 pub enum DiffWatchReloadEvent {
     Done {
@@ -915,6 +921,8 @@ pub enum DiffWatchReloadEvent {
 #[derive(Debug)]
 pub struct DiffWatchReload {
     pub request: DiffWatchReloadRequest,
+    pub target: DiffWatchTarget,
+    pub commit_limit: usize,
     pub rx: std::sync::mpsc::Receiver<DiffWatchReloadEvent>,
 }
 
@@ -1089,8 +1097,7 @@ pub struct App {
     pub(crate) session_file_state: Option<SessionFileState>,
     pub review_watch_interval: Option<Duration>,
     pub next_review_watch_at: Instant,
-    /// `None` by default: the diff watch is opt-in. A `0` interval in config
-    /// also means disabled.
+    /// A `0` interval in config disables automatic local refreshes.
     pub diff_watch_interval: Option<Duration>,
     pub next_diff_watch_at: Instant,
     /// Last diff-watch error text, so a sustained failure warns once instead of

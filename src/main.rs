@@ -390,7 +390,9 @@ fn main() -> anyhow::Result<()> {
         app.poll_pr_submit_events();
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
-        needs_redraw |= app.poll_diff_watch_changes();
+        if !pending_z && !pending_shift_z && !pending_d && !pending_leader {
+            needs_redraw |= app.poll_diff_watch_changes();
+        }
         needs_redraw |= pr_pending;
 
         if needs_redraw {

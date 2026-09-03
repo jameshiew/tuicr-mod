@@ -472,8 +472,9 @@ impl App {
             review_watch_interval: Some(Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS)),
             next_review_watch_at: Instant::now()
                 + Duration::from_millis(DEFAULT_REVIEW_WATCH_INTERVAL_MS),
-            diff_watch_interval: None,
-            next_diff_watch_at: Instant::now(),
+            diff_watch_interval: Some(Duration::from_millis(DEFAULT_DIFF_WATCH_INTERVAL_MS)),
+            next_diff_watch_at: Instant::now()
+                + Duration::from_millis(DEFAULT_DIFF_WATCH_INTERVAL_MS),
             last_diff_watch_error: None,
             diff_watch_reload: None,
             vcs_open_options: VcsOpenOptions::default(),

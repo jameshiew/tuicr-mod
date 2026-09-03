@@ -143,8 +143,8 @@ pub struct AppConfig {
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
-    /// Disabled by default, and `0` disables it too. Ignored for
-    /// pull-request reviews and `--all-files` mode.
+    /// Overrides the default local refresh interval. `0` disables it.
+    /// Ignored for pull-request reviews and `--all-files` mode.
     pub diff_watch_interval_ms: Option<usize>,
     /// Render single-file and pristine views in full-width mode by default.
     /// Pristine `--all-files` mode always enables this regardless of this
@@ -1275,10 +1275,8 @@ mod tests {
         assert!(outcome.warnings.is_empty());
     }
 
-    /// Unlike `review_watch_interval_ms`, this feature must default to off:
-    /// an absent key must parse to `None`, not a positive interval.
     #[test]
-    fn should_default_diff_watch_interval_ms_to_none_when_absent() {
+    fn should_leave_default_diff_watch_interval_unset_when_absent() {
         let outcome = parse_config("theme = \"dark\"\n");
         assert_eq!(
             outcome
