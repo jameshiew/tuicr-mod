@@ -3,7 +3,6 @@ use crate::app::diff_load::{
     normalize_diff_watch_result,
 };
 use crate::app::*;
-use crate::forge::traits::{ForgeRepository, PrSessionKey};
 use std::sync::mpsc;
 
 /// Minimal `VcsBackend` used only to satisfy `App::build`'s requirement for
@@ -79,27 +78,8 @@ fn build_app(files: Vec<DiffFile>, diff_source: DiffSource) -> App {
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("failed to build test app")
-}
-
-fn test_pull_request_source() -> DiffSource {
-    DiffSource::PullRequest(Box::new(PullRequestDiffSource {
-        key: PrSessionKey::new(
-            ForgeRepository::github("github.com", "agavra", "tuicr"),
-            125,
-            "abcdef0123".to_string(),
-        ),
-        base_sha: "0000".to_string(),
-        title: "test pr".to_string(),
-        url: "https://github.com/agavra/tuicr/pull/125".to_string(),
-        head_ref_name: "feat".to_string(),
-        base_ref_name: "main".to_string(),
-        state: "OPEN".to_string(),
-        closed: false,
-        merged: false,
-    }))
 }
 
 /// Hunks are left empty: most of these tests never render content.
@@ -255,18 +235,6 @@ fn should_not_spawn_when_deadline_not_reached() {
 }
 
 #[test]
-fn should_not_spawn_for_pull_request_source() {
-    let mut app = build_app(vec![make_diff_file("a.rs", 1)], test_pull_request_source());
-    app.diff_watch_interval = Some(Duration::from_millis(500));
-    expire_deadline(&mut app);
-
-    let redraw = app.poll_diff_watch_changes();
-
-    assert!(!redraw);
-    assert!(app.diff_watch_reload.is_none());
-}
-
-#[test]
 fn should_not_spawn_in_pristine_mode() {
     let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::WorkingTree);
     app.diff_watch_interval = Some(Duration::from_millis(500));
@@ -340,20 +308,6 @@ fn should_fetch_while_the_local_target_selector_is_open() {
     assert_eq!(
         app.diff_watch_tick(Instant::now()),
         DiffWatchTick::Fetch(Duration::from_millis(500))
-    );
-}
-
-#[test]
-fn should_defer_while_a_remote_target_tab_is_open() {
-    let mut app = build_app(vec![], DiffSource::WorkingTree);
-    app.input_mode = InputMode::CommitSelect;
-    app.target_tab = TargetTab::PullRequests;
-    app.diff_watch_interval = Some(Duration::from_millis(500));
-    expire_deadline(&mut app);
-
-    assert_eq!(
-        app.diff_watch_tick(Instant::now()),
-        DiffWatchTick::Defer(Duration::from_millis(500))
     );
 }
 
@@ -729,61 +683,6 @@ fn should_unmark_only_the_edited_hunk_when_a_watch_tick_changes_it() {
     assert!(
         reviewed_hunks.contains(&keys[1]),
         "the untouched hunk must keep its mark"
-    );
-}
-
-/// Both watchers write to `self.session`, and `src/main.rs` polls them in
-/// the same loop iteration. The session watcher merges whatever is on disk,
-/// where this file is still recorded as reviewed. A naive merge would hand
-/// the mark straight back, and the user would never learn the content moved.
-/// `merge_external_session_changes` prevents that by adopting the
-/// external value only when the local one still matches the snapshot it was
-/// last read at. Clearing the mark breaks that match, so the local clear
-/// wins.
-///
-/// This drives both watchers rather than calling the merge function directly.
-/// The merge rule is only half of it. The other half is that the snapshot
-/// still says reviewed when the diff watcher clears the live copy.
-#[test]
-fn should_not_restore_a_cleared_reviewed_mark_when_the_session_watcher_runs_after() {
-    let mut app = build_app(vec![make_diff_file("a.rs", 1)], DiffSource::WorkingTree);
-    app.toggle_reviewed_for_file_idx(0, false);
-
-    // On disk and in the snapshot the file is reviewed, which is the state
-    // that has to lose to the local clear.
-    let session_dir = tempfile::tempdir().expect("temp dir");
-    let session_file = session_dir.path().join("session.json");
-    std::fs::write(
-        &session_file,
-        serde_json::to_string(&app.session).expect("serialize session"),
-    )
-    .expect("write session file");
-    app.session_path = Some(session_file);
-    app.persisted_session_snapshot = app.session.clone();
-
-    deliver(
-        &mut app,
-        working_tree_request(),
-        DiffWatchReloadEvent::Done {
-            request: working_tree_request(),
-            result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
-            change_status: None,
-            commits: None,
-        },
-    );
-    assert!(
-        !app.session.is_file_reviewed(&PathBuf::from("a.rs")),
-        "test setup: the diff watch tick must have cleared the mark first"
-    );
-
-    // main.rs polls the session watcher right after the diff watcher.
-    app.review_watch_interval = Some(Duration::from_millis(1));
-    app.next_review_watch_at = Instant::now() - Duration::from_millis(1);
-    app.poll_persisted_session_changes();
-
-    assert!(
-        !app.session.is_file_reviewed(&PathBuf::from("a.rs")),
-        "the session watcher must not restore a mark the diff watcher cleared"
     );
 }
 

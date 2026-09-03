@@ -64,7 +64,6 @@ fn build_app(commit_list: Vec<CommitInfo>) -> App {
         InputMode::CommitSelect,
         commit_list,
         None,
-        None,
     )
     .expect("failed to build test app")
 }
@@ -402,7 +401,7 @@ fn should_mark_a_commit_only_file_reviewed_when_every_commit_is_selected() {
 #[test]
 fn should_comment_on_a_commit_only_file_after_narrowing_the_commit_pane() {
     use crate::model::comment::{CommentType, LineSide};
-    use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+    use crate::model::{AddCommentRequest, CommentTarget, add_comment_to_session};
 
     let mut app = build_app(vec![normal_commit("c2"), normal_commit("c1")]);
     app.review_commits = app.commit_list.clone();

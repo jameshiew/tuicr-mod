@@ -60,7 +60,6 @@ fn build_app_with_review_commits(commits: Vec<CommitInfo>) -> App {
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("failed to build test app");
     app.review_commits = commits;
@@ -195,7 +194,7 @@ fn commit_id_for_new_comment_is_sha_for_single_commit() {
 
 #[test]
 fn add_comment_to_session_stamps_commit_id_when_provided() {
-    use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+    use crate::model::{AddCommentRequest, CommentTarget, add_comment_to_session};
     use std::path::PathBuf;
 
     let mut session = ReviewSession::new(
@@ -243,7 +242,7 @@ fn add_comment_to_session_stamps_commit_id_when_provided() {
 
 #[test]
 fn add_comment_to_session_leaves_commit_id_none_when_not_provided() {
-    use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
+    use crate::model::{AddCommentRequest, CommentTarget, add_comment_to_session};
     use std::path::PathBuf;
 
     let mut session = ReviewSession::new(
@@ -277,27 +276,5 @@ fn add_comment_to_session_leaves_commit_id_none_when_not_provided() {
     assert_eq!(
         comment.commit_id, None,
         "commit_id must stay None when not provided"
-    );
-}
-
-#[test]
-fn legacy_session_json_deserializes_comment_without_commit_id() {
-    let json = r#"{
-            "id": "test-id",
-            "content": "old comment",
-            "comment_type": "note",
-            "created_at": "2024-01-01T00:00:00Z",
-            "line_context": null,
-            "side": null,
-            "line_range": null,
-            "author": "user",
-            "lifecycle_state": "local_draft",
-            "remote_review_id": null,
-            "remote_comment_id": null
-        }"#;
-    let comment: crate::model::Comment = serde_json::from_str(json).unwrap();
-    assert_eq!(
-        comment.commit_id, None,
-        "legacy JSON without commit_id must deserialize as None"
     );
 }

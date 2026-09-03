@@ -8,9 +8,6 @@ pub enum TuicrError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("JSON serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-
     #[error("Not a repository")]
     NotARepository,
 
@@ -28,9 +25,6 @@ pub enum TuicrError {
 
     #[error("VCS command failed: {0}")]
     VcsCommand(String),
-
-    #[error("{0}")]
-    Forge(String),
 
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),

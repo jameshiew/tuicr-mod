@@ -6,29 +6,22 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, TargetTab, sessions_tab};
-use crate::forge::selector::{PrTabStatus, PrTabView};
-use crate::forge::traits::PullRequestListScope;
-use crate::ui::commit_row::{
-    CURSOR_GLYPH, CommitRowSpec, format_relative_short, render_commit_row,
-};
+use crate::app::App;
+use crate::ui::commit_row::{CURSOR_GLYPH, CommitRowSpec, render_commit_row};
 use crate::ui::status_bar;
 use crate::ui::styles;
-use crate::ui::text_utils::truncate_or_pad;
 
 const TAB_LOCAL: &str = "Local";
-const TAB_PULL_REQUESTS: &str = "Pull Requests";
-const TAB_SESSIONS: &str = "Sessions";
 
 pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    // Layout: top bar (brand + tabs + right-slot status), bordered body,
-    // footer. The tabs live INSIDE the top bar — no separate strip row.
+    // Layout: top bar (brand + tab + right-slot status), bordered body,
+    // footer. The tab lives INSIDE the top bar — no separate strip row.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // top bar (brand + tabs + status)
+            Constraint::Length(1), // top bar (brand + tab + status)
             Constraint::Min(0),    // body block (full borders)
             Constraint::Length(1), // footer
         ])
@@ -37,39 +30,23 @@ pub(super) fn render_commit_select(frame: &mut Frame, app: &mut App) {
     render_top_bar(frame, app, chunks[0]);
 
     let body_area = chunks[1];
-    let mut body_block = Block::default()
+    let body_block = Block::default()
         .borders(Borders::ALL)
         .border_style(styles::border_style(&app.theme, true))
         .style(styles::panel_style(&app.theme));
-    // The Sessions tab lists only this checkout's reviews, which is not
-    // obvious from rows whose slug is trimmed to the review target. Name the
-    // scope in the border title rather than spending a row or slug width on a
-    // repo that is the same for every row.
-    if app.target_tab == TargetTab::Sessions {
-        body_block = body_block.title(format!(" Reviews \u{00b7} {} ", app.sessions_tab.scope()));
-    }
     let inner = body_block.inner(body_area);
     frame.render_widget(body_block, body_area);
 
-    match app.target_tab {
-        TargetTab::Local => render_local_target_tab(frame, app, inner),
-        TargetTab::PullRequests => render_pull_requests_tab(frame, app, inner),
-        TargetTab::Sessions => render_sessions_tab(frame, app, inner),
-    }
+    render_local_target_tab(frame, app, inner);
 
     render_target_selector_footer(frame, app, chunks[2]);
 }
 
-/// Combined top bar: brand on the left, tab chips, then a right slot
-/// carrying `git:<branch>` (Local tab) or the PR-tab status hint. The entire
-/// row uses `status_bar_bg` so the active tab's `bg_highlight` reads as a
-/// chip popping out of the strip.
+/// Combined top bar: brand on the left, the tab chip, then a right slot
+/// carrying `git:<branch>`. The entire row uses `status_bar_bg` so the
+/// active tab's `bg_highlight` reads as a chip popping out of the strip.
 fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let active = app.target_tab;
-    let local_active = active == TargetTab::Local;
-    let pr_active = active == TargetTab::PullRequests;
-    let sessions_active = active == TargetTab::Sessions;
 
     let strip_bg = theme.status_bar_bg;
     let strip_style = Style::default().bg(strip_bg).fg(theme.fg_dim);
@@ -81,57 +58,18 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
         .bg(theme.bg_highlight)
         .fg(theme.fg_primary)
         .add_modifier(Modifier::BOLD);
-    let inactive_chip = Style::default().bg(strip_bg).fg(theme.fg_dim);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(" tuicr  ", brand_style));
-    spans.push(Span::styled(
-        format!(" {TAB_LOCAL} "),
-        if local_active {
-            active_chip
-        } else {
-            inactive_chip
-        },
-    ));
-    spans.push(Span::styled(" ".to_string(), strip_style));
-    spans.push(Span::styled(
-        format!(" {TAB_PULL_REQUESTS} "),
-        if pr_active {
-            active_chip
-        } else {
-            inactive_chip
-        },
-    ));
-    spans.push(Span::styled(" ".to_string(), strip_style));
-    spans.push(Span::styled(
-        format!(" {TAB_SESSIONS} "),
-        if sessions_active {
-            active_chip
-        } else {
-            inactive_chip
-        },
-    ));
+    spans.push(Span::styled(format!(" {TAB_LOCAL} "), active_chip));
 
     let left_width: usize = spans.iter().map(|s| s.content.chars().count()).sum();
 
-    let (right_span, right_width) = match active {
-        TargetTab::PullRequests => pr_status_hint_span(app, strip_bg),
-        TargetTab::Sessions => {
-            let count = app.sessions_tab.rows().len();
-            // `<n> saved`, not `<n> sessions`: mirrors the PR tab's
-            // `<n> loaded` and stays correct at a count of one.
-            let content = format!(" {count} saved ");
-            let width = content.chars().count();
-            (Span::styled(content, strip_style), width)
-        }
-        TargetTab::Local => {
-            let vcs_type = &app.vcs_info.vcs_type;
-            let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
-            let content = format!(" {vcs_type}:{branch} ");
-            let width = content.chars().count();
-            (Span::styled(content, strip_style), width)
-        }
-    };
+    let vcs_type = &app.vcs_info.vcs_type;
+    let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
+    let content = format!(" {vcs_type}:{branch} ");
+    let right_width = content.chars().count();
+    let right_span = Span::styled(content, strip_style);
 
     let total_width = area.width as usize;
     let pad = total_width.saturating_sub(left_width + right_width);
@@ -143,69 +81,10 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)).style(strip_style), area);
 }
 
-/// Right-slot status hint for the PR tab. Idle ready states show
-/// `<count> loaded · /<filter>` (filter only when set). Loading shows a
-/// braille spinner + label. Error renders in error color. The caller
-/// supplies the strip bg so the hint blends with the tab strip's bar.
-fn pr_status_hint_span(app: &App, strip_bg: ratatui::style::Color) -> (Span<'static>, usize) {
-    let theme = &app.theme;
-    let view = app.pr_tab.view();
-    let base = Style::default().bg(strip_bg).fg(theme.fg_secondary);
-    let (content, style) = match &view.status {
-        PrTabStatus::Disabled(reason) => (format!("{reason} — Shift-Tab to go back "), base),
-        PrTabStatus::Idle => {
-            let prefix = pr_scope_prefix(view.scope);
-            (format!(" {prefix}waiting… "), base)
-        }
-        PrTabStatus::Loading => {
-            let glyph = pr_open_spinner_glyph(std::time::Duration::from_millis(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
-            ));
-            let prefix = pr_scope_prefix(view.scope);
-            (format!("{glyph} {prefix}loading… "), base)
-        }
-        PrTabStatus::LoadingMore => {
-            let glyph = pr_open_spinner_glyph(std::time::Duration::from_millis(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
-            ));
-            let prefix = pr_scope_prefix(view.scope);
-            (format!("{glyph} {prefix}loading more… "), base)
-        }
-        PrTabStatus::Error(msg) => (
-            format!("error \u{00b7} {msg} "),
-            styles::error_inline_style(theme).bg(strip_bg),
-        ),
-        PrTabStatus::Ready => {
-            let mut s = format!("{}{} loaded", pr_scope_prefix(view.scope), view.rows.len());
-            if !view.filter.is_empty() {
-                s.push_str(&format!(" \u{00b7} /{}", view.filter));
-            }
-            s.push(' ');
-            (s, base)
-        }
-    };
-    let width = content.len();
-    (Span::styled(content, style), width)
-}
-
-fn pr_scope_prefix(scope: PullRequestListScope) -> &'static str {
-    match scope {
-        PullRequestListScope::Open => "",
-        PullRequestListScope::ReviewRequested => "requested · ",
-    }
-}
-
 fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     // Update viewport height for scroll calculations
     app.commit_list_viewport_height = area.height as usize;
     app.commit_list_inner_area = Some(area);
-    app.pr_list_inner_area = None;
 
     let total_commits = app.commit_list.len();
     let visible_count = app.visible_commit_count.min(total_commits);
@@ -262,303 +141,20 @@ fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str
     ])
 }
 
-fn render_pull_requests_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.commit_list_inner_area = None;
-    app.pr_list_inner_area = Some(area);
-    app.pr_list_viewport_height = area.height as usize;
-
-    let view = app.pr_tab.view();
-    render_pr_list(frame, app, area, &view);
-}
-
-/// Persisted review sessions for this checkout, newest first. Rows mirror the
-/// PR tab's column layout: cursor, kind, slug, then a dim metadata tail.
-fn render_sessions_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.commit_list_inner_area = None;
-    app.pr_list_inner_area = None;
-    app.sessions_list_viewport_height = area.height as usize;
-
-    let theme = &app.theme;
-    if area.height == 0 {
-        return;
-    }
-
-    if let Some(error) = app.sessions_tab.error() {
-        let line = Line::from(vec![
-            Span::styled("  error \u{00b7} ", styles::error_inline_style(theme)),
-            Span::styled(
-                format!("Failed to list saved reviews: {error}"),
-                Style::default().fg(theme.fg_primary),
-            ),
-        ]);
-        frame.render_widget(
-            Paragraph::new(vec![line]).style(styles::panel_style(theme)),
-            area,
-        );
-        return;
-    }
-
-    if app.sessions_tab.is_empty() {
-        let line = Line::from(Span::styled(
-            "  No saved reviews for this checkout",
-            Style::default().fg(theme.fg_dim),
-        ));
-        frame.render_widget(
-            Paragraph::new(vec![line]).style(styles::panel_style(theme)),
-            area,
-        );
-        return;
-    }
-
-    let height = area.height as usize;
-    let scroll = app.sessions_tab.scroll();
-    let cursor = app.sessions_tab.cursor();
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in app
-        .sessions_tab
-        .rows()
-        .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(height)
-    {
-        let is_cursor = i == cursor;
-        let pointer_str = if is_cursor {
-            format!("{CURSOR_GLYPH} ")
-        } else {
-            "  ".to_string()
-        };
-        let pointer_style = if is_cursor {
-            styles::selected_style(theme)
-        } else {
-            Style::default().fg(theme.fg_secondary)
-        };
-
-        let kind = truncate_or_pad(sessions_tab::kind_label(row.kind), 5);
-        // Omit the repeated `owner/repo@` prefix so the target stays visible
-        // when the row is truncated. The border title names the repository.
-        let target = row
-            .slug
-            .split_once('@')
-            .map_or(row.slug.as_str(), |(_, rest)| rest);
-        let slug = truncate_or_pad(target, 60);
-        let updated = format_relative_short(&row.updated_at);
-        let active = if row.active { " \u{00b7} open" } else { "" };
-
-        lines.push(Line::from(vec![
-            Span::styled(pointer_str, pointer_style),
-            Span::styled("  ", Style::default()),
-            Span::styled(kind, styles::hash_style(theme)),
-            Span::styled(" ", Style::default()),
-            Span::styled(slug, Style::default().fg(theme.fg_primary)),
-            Span::styled(
-                format!(
-                    "  {} comments \u{00b7} {}/{} files \u{00b7} {}{}",
-                    row.comment_count, row.reviewed_count, row.file_count, updated, active
-                ),
-                Style::default().fg(theme.fg_secondary),
-            ),
-        ]));
-    }
-
-    frame.render_widget(
-        Paragraph::new(lines).style(styles::panel_style(theme)),
-        area,
-    );
-}
-
-fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>) {
-    let theme = &app.theme;
-    if area.height == 0 {
-        return;
-    }
-
-    // The tab-strip right slot already surfaces loading / error / disabled
-    // hints concisely; the body only fills in when there's a useful action
-    // (idle → tap Tab again, error → retry guidance). Disabled / Loading /
-    // LoadingMore leave the body blank so we don't echo the same text twice.
-    match view.status {
-        PrTabStatus::Disabled(_) | PrTabStatus::Loading | PrTabStatus::LoadingMore => return,
-        PrTabStatus::Idle => {
-            let line = Line::from(Span::styled(
-                "  Press Tab again to load pull requests\u{2026}",
-                Style::default().fg(theme.fg_dim),
-            ));
-            frame.render_widget(
-                Paragraph::new(vec![line]).style(styles::panel_style(theme)),
-                area,
-            );
-            return;
-        }
-        PrTabStatus::Error(msg) => {
-            let line = Line::from(vec![
-                Span::styled("  error \u{00b7} ", styles::error_inline_style(theme)),
-                Span::styled(msg.to_string(), Style::default().fg(theme.fg_primary)),
-            ]);
-            frame.render_widget(
-                Paragraph::new(vec![line]).style(styles::panel_style(theme)),
-                area,
-            );
-            return;
-        }
-        PrTabStatus::Ready => {}
-    }
-
-    let spinner = app
-        .pr_open_state
-        .as_ref()
-        .map(|s| pr_open_spinner_glyph(s.started_at.elapsed()));
-
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in view.rows.iter().enumerate() {
-        let is_cursor = i == view.cursor;
-        let is_loading = matches!(
-            (spinner, app.pr_open_state.as_ref()),
-            (Some(_), Some(s)) if s.matches(&row.summary.repository, row.summary.number)
-        );
-
-        let pointer_str = if is_loading {
-            format!("{} ", spinner.unwrap_or("⠋"))
-        } else if is_cursor {
-            format!("{CURSOR_GLYPH} ")
-        } else {
-            "  ".to_string()
-        };
-        let pointer_style = if is_loading || is_cursor {
-            styles::selected_style(theme)
-        } else {
-            Style::default().fg(theme.fg_secondary)
-        };
-
-        // PRs are single-select. Mirror the commit-row column layout for
-        // visual consistency (leading cursor + a placeholder column where
-        // the range bar lives on commit rows) and pad title/author so the
-        // date column lands at the same x across rows.
-        let number = format!("#{:<5}", row.summary.number);
-        let title = truncate_or_pad(&row.summary.title, 60);
-        let author = truncate_or_pad(row.summary.author.as_deref().unwrap_or("?"), 12);
-        let updated = row
-            .summary
-            .updated_at
-            .as_ref()
-            .map(format_relative_short)
-            .unwrap_or_else(|| "—".to_string());
-        let draft = if row.summary.is_draft { " [draft]" } else { "" };
-
-        lines.push(Line::from(vec![
-            Span::styled(pointer_str, pointer_style),
-            Span::styled("  ", Style::default()),
-            Span::styled(number, styles::hash_style(theme)),
-            Span::styled(" ", Style::default()),
-            Span::styled(title, Style::default().fg(theme.fg_primary)),
-            Span::styled(
-                format!("  {} \u{00b7} {}{}", author, updated, draft),
-                Style::default().fg(theme.fg_secondary),
-            ),
-        ]));
-    }
-
-    if view.has_load_more {
-        let load_idx = view.rows.len();
-        let is_cursor = view.cursor == load_idx;
-        lines.push(overflow_row(theme, is_cursor, "load more pull requests"));
-    }
-
-    if lines.is_empty() {
-        let msg = if view.filter.is_empty() {
-            "  No open pull requests"
-        } else {
-            "  No pull requests match the filter"
-        };
-        lines.push(Line::from(Span::styled(
-            msg,
-            Style::default().fg(theme.fg_dim),
-        )));
-    }
-
-    let visible: Vec<Line> = lines
-        .into_iter()
-        .skip(view.scroll_offset)
-        .take(area.height as usize)
-        .collect();
-    let paragraph = Paragraph::new(visible).style(styles::panel_style(theme));
-    frame.render_widget(paragraph, area);
-}
-
-/// Braille spinner frames advanced every ~100ms based on elapsed time.
-/// Stable across redraws because the start instant lives on `App`.
-pub(crate) fn pr_open_spinner_glyph(elapsed: std::time::Duration) -> &'static str {
-    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    const FRAME_MS: u128 = 100;
-    let idx = (elapsed.as_millis() / FRAME_MS) as usize % FRAMES.len();
-    FRAMES[idx]
-}
-
 fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-
-    // While editing the PR filter, the footer becomes a vim-style input
-    // line: left slot carries `/<draft>|`, right slot the apply/cancel hint.
-    if let Some(draft) = app.pr_filter_draft.as_ref() {
-        let left = vec![Span::styled(
-            format!(" /{draft}"),
-            Style::default().fg(theme.fg_primary),
-        )];
-        let (message_span, message_width) =
-            status_bar::build_message_span(app.message.as_ref(), theme);
-        let right_span = if message_width > 0 {
-            message_span
-        } else {
-            Span::styled(
-                " enter apply \u{00b7} esc cancel ",
-                Style::default().fg(theme.fg_secondary),
-            )
-        };
-        let right_width = right_span.content.len();
-        let spans = status_bar::build_right_aligned_spans(
-            left,
-            right_span,
-            right_width,
-            area.width as usize,
-        );
-        let footer = Paragraph::new(Line::from(spans)).style(styles::status_bar_style(theme));
-        frame.render_widget(footer, area);
-
-        // Set the terminal cursor at the end of the filter buffer so users
-        // see where typing will land.
-        let cursor_x = area.x + 2 + draft.len() as u16;
-        let cursor_y = area.y;
-        frame.set_cursor_position(ratatui::layout::Position {
-            x: cursor_x.min(area.x + area.width.saturating_sub(1)),
-            y: cursor_y,
-        });
-        return;
-    }
 
     let mode_span = Span::styled(" SELECT ", styles::mode_style(theme));
 
     let hints = if app.message.is_some() {
         String::new()
     } else {
-        match app.target_tab {
-            TargetTab::Local => {
-                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} q quit"
-                    .to_string()
-            }
-            TargetTab::PullRequests => {
-                let scope_hint = match app.pr_tab.scope() {
-                    PullRequestListScope::Open => "r requested",
-                    PullRequestListScope::ReviewRequested => "r all PRs",
-                };
-                format!("   j/k navigate · ↵ open · {scope_hint} · / filter · q quit · esc back")
-            }
-            TargetTab::Sessions => "   j/k navigate · ↵ resume · q quit · esc back".to_string(),
-        }
+        "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} q quit".to_string()
     };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
     let selected_count = match app.commit_selection_range {
-        Some((start, end)) if app.target_tab == TargetTab::Local => end - start + 1,
+        Some((start, end)) => end - start + 1,
         _ => 0,
     };
 
@@ -601,10 +197,7 @@ mod selector_render_snapshot_tests {
     use crate::app::{App, DiffSource, InputMode};
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
-    use crate::forge::selector::PullRequestsTab;
-    use crate::forge::traits::{ForgeRepository, PullRequestSummary};
     use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
-    use crate::review_store::SessionSummary;
     use crate::syntax::SyntaxHighlighter;
     use crate::theme::Theme;
     use crate::ui::render;
@@ -700,28 +293,8 @@ mod selector_render_snapshot_tests {
             InputMode::CommitSelect,
             commits,
             None,
-            None,
         )
         .expect("build app")
-    }
-
-    fn repo() -> ForgeRepository {
-        ForgeRepository::github("github.com", "agavra", "tuicr")
-    }
-
-    fn pr(number: u64, title: &str, author: &str) -> PullRequestSummary {
-        PullRequestSummary {
-            repository: repo(),
-            number,
-            title: title.to_string(),
-            author: Some(author.to_string()),
-            head_ref_name: format!("feat/{number}"),
-            base_ref_name: "main".to_string(),
-            updated_at: Some(Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()),
-            url: format!("https://github.com/agavra/tuicr/pull/{number}"),
-            state: "OPEN".to_string(),
-            is_draft: false,
-        }
     }
 
     fn draw_at(app: &mut App, width: u16, height: u16) -> Buffer {
@@ -811,19 +384,17 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
-    fn should_render_both_tab_labels_with_active_chip_bg_when_local_active() {
-        // given — plain app, Local is active by default
+    fn should_render_local_tab_label_with_active_chip_bg() {
+        // given — plain app, Local is the only tab
         let mut app = make_app(vec![commit(0), commit(1)]);
         let highlight_bg = app.theme.bg_highlight;
         // when
         let buffer = draw(&mut app);
-        // then — tab strip shows every label in the single bg-filled row
+        // then — tab strip shows the Local label in the bg-filled row
         let strip = row_text(&buffer, TAB_STRIP_ROW);
         assert!(
-            strip.contains("Local")
-                && strip.contains("Pull Requests")
-                && strip.contains("Sessions"),
-            "tab strip missing labels: {strip:?}"
+            strip.contains("Local"),
+            "tab strip missing label: {strip:?}"
         );
         // and — the active "Local" chip carries the highlight bg
         let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Local");
@@ -835,126 +406,6 @@ mod selector_render_snapshot_tests {
         assert!(
             any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi),
             "active Local label should be BOLD"
-        );
-        // inactive "Pull Requests" is NOT highlighted
-        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Pull Requests");
-        assert!(
-            !any_bg_in_range(&buffer, TAB_STRIP_ROW, lo, hi, highlight_bg),
-            "inactive Pull Requests chip should NOT carry bg_highlight"
-        );
-    }
-
-    #[test]
-    fn should_show_disabled_hint_in_status_slot_when_pr_tab_active_without_forge() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then — tab strip carries the disabled reason in its right slot
-        let strip = row_text(&buffer, TAB_STRIP_ROW);
-        assert!(
-            strip.contains("remote on this repo"),
-            "expected disabled hint in tab strip, got: {strip:?}"
-        );
-    }
-
-    #[test]
-    fn should_bold_pr_tab_label_when_pr_tab_active() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        app.pr_tab = PullRequestsTab::new(Some(repo()));
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Pull Requests");
-        assert!(any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi));
-        let (lo, hi) = locate(&buffer, TAB_STRIP_ROW, "Local");
-        assert!(!any_bold_in_range(&buffer, TAB_STRIP_ROW, lo, hi));
-    }
-
-    #[test]
-    fn should_render_loaded_pr_rows_with_number_title_author() {
-        // given — two loaded PRs
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((
-            vec![
-                pr(148, "Add forge-backed PR review", "alice"),
-                pr(125, "Support fetching/pushing reviews", "ypares"),
-            ],
-            false,
-        )));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let body = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
-        for needle in [
-            "#148",
-            "Add forge-backed PR review",
-            "alice",
-            "#125",
-            "Support fetching/pushing reviews",
-            "ypares",
-        ] {
-            assert!(body.contains(needle), "missing {needle:?} in:\n{body}");
-        }
-    }
-
-    #[test]
-    fn should_show_loaded_count_in_tab_strip_status_slot_when_ready() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((
-            vec![pr(1, "alpha", "a"), pr(2, "beta", "b"), pr(3, "gamma", "c")],
-            false,
-        )));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then — `3 loaded` lives in the tab-strip right slot
-        let strip = row_text(&buffer, TAB_STRIP_ROW);
-        assert!(
-            strip.contains("3 loaded"),
-            "expected '3 loaded' in tab strip, got: {strip:?}"
-        );
-    }
-
-    #[test]
-    fn should_show_requested_scope_in_tab_strip_status_slot() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.toggle_scope_and_start_reload();
-        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], false)));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let strip = row_text(&buffer, TAB_STRIP_ROW);
-        assert!(
-            strip.contains("requested · 1 loaded"),
-            "expected requested scope in tab strip, got: {strip:?}"
-        );
-        let footer = row_text(&buffer, buffer.area.height - 1);
-        assert!(
-            footer.contains("r all PRs"),
-            "expected footer toggle hint, got: {footer:?}"
         );
     }
 
@@ -973,235 +424,19 @@ mod selector_render_snapshot_tests {
     }
 
     #[test]
-    fn should_render_q_quit_hint_on_each_target_tab() {
+    fn should_render_q_quit_hint_in_footer() {
         let mut app = make_app(vec![commit(0)]);
-
-        for target_tab in [
-            crate::app::TargetTab::Local,
-            crate::app::TargetTab::PullRequests,
-            crate::app::TargetTab::Sessions,
-        ] {
-            app.target_tab = target_tab;
-            let buffer = draw(&mut app);
-            let footer = row_text(&buffer, buffer.area.height - 1);
-            assert!(
-                footer.contains("q quit"),
-                "expected q quit hint in selector footer, got: {footer:?}"
-            );
-        }
-    }
-
-    fn session_summary(slug: &str, comments: usize, active: bool) -> SessionSummary {
-        SessionSummary {
-            session_ref: crate::review_store::SessionRef::from_path("/tmp/s.json"),
-            slug: slug.to_string(),
-            kind: crate::review_store::SessionKind::Local,
-            updated_at: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
-            comment_count: comments,
-            reviewed_count: 1,
-            file_count: 3,
-            anchor: "main".to_string(),
-            active,
-        }
-    }
-
-    #[test]
-    fn should_render_session_rows_with_slug_and_comment_count() {
-        // given — the Sessions tab with one saved review
-        let mut app = make_app(vec![commit(0)]);
-        app.sessions_tab.apply_load(Ok(vec![session_summary(
-            "repo@main/commits/aaa..bbb",
-            7,
-            true,
-        )]));
-        app.target_tab = crate::app::TargetTab::Sessions;
-        // when
         let buffer = draw(&mut app);
-        // then — the slug's target segment carries the review scope, so it
-        // must be visible (the repo prefix lives in the border title)
-        let body = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("main/commits/aaa..bbb"),
-            "expected the review target in body:\n{body}"
-        );
-        assert!(
-            body.contains("7 comments"),
-            "expected comment count in body:\n{body}"
-        );
-        assert!(
-            body.contains("open"),
-            "expected the active marker in body:\n{body}"
-        );
-    }
-
-    #[test]
-    fn should_name_the_checkout_in_the_sessions_border_title() {
-        // given — the tab lists only this checkout's reviews, which the rows
-        // no longer say now that the repo prefix is trimmed off the slug
-        let mut app = make_app(vec![commit(0)]);
-        app.sessions_tab.set_scope("owner/repo".to_string());
-        app.sessions_tab.apply_load(Ok(vec![session_summary(
-            "repo@main/commits/aaa..bbb",
-            7,
-            true,
-        )]));
-        app.target_tab = crate::app::TargetTab::Sessions;
-        // when
-        let buffer = draw(&mut app);
-        // then — the scope is on the border, costing no row
-        let border = row_text(&buffer, 1);
-        assert!(
-            border.contains("Reviews \u{00b7} owner/repo"),
-            "expected a scope title on the body border, got: {border:?}"
-        );
-    }
-
-    #[test]
-    fn should_trim_the_repo_prefix_from_session_rows() {
-        // given — a slug whose repo prefix is long enough to push the commit
-        // range past the row's truncation point
-        let mut app = make_app(vec![commit(0)]);
-        app.sessions_tab.apply_load(Ok(vec![session_summary(
-            "fairinternal/ai-verification-leanified-hl@main/commits/e4b5941..8b2838d",
-            7,
-            false,
-        )]));
-        app.target_tab = crate::app::TargetTab::Sessions;
-        // when
-        let buffer = draw(&mut app);
-        // then — the target survives, the redundant prefix does not
-        let body = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("main/commits/e4b5941..8b2838d"),
-            "the commit range is what rows are told apart by, body:\n{body}"
-        );
-        assert!(
-            !body.contains("fairinternal/ai-verification-leanified-hl@"),
-            "repo prefix is in the border title, not on every row, body:\n{body}"
-        );
-    }
-
-    #[test]
-    fn should_render_empty_state_when_no_saved_sessions() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.sessions_tab.apply_load(Ok(Vec::new()));
-        app.target_tab = crate::app::TargetTab::Sessions;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let body = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("No saved reviews"),
-            "expected empty state, body:\n{body}"
-        );
-    }
-
-    #[test]
-    fn should_show_load_more_row_when_has_more_and_no_filter() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], true)));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let body = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("load more pull requests"),
-            "expected load-more row, body:\n{body}"
-        );
-    }
-
-    #[test]
-    fn should_hide_load_more_row_when_filter_active() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], true)));
-        tab.set_filter("alpha".to_string());
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let body = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !body.contains("load more pull requests"),
-            "load-more row should be hidden while filter is active:\n{body}"
-        );
-    }
-
-    #[test]
-    fn should_render_filter_draft_input_in_footer_when_editing() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((vec![pr(1, "alpha", "a")], false)));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        app.pr_filter_draft = Some("alp".to_string());
-        // when
-        let buffer = draw(&mut app);
-        // then — footer (last row) carries `/alp` on the left and apply/cancel on the right
         let footer = row_text(&buffer, buffer.area.height - 1);
         assert!(
-            footer.contains("/alp"),
-            "expected filter draft in footer, got: {footer:?}"
-        );
-        assert!(
-            footer.contains("apply") && footer.contains("cancel"),
-            "expected apply/cancel hint in footer, got: {footer:?}"
-        );
-    }
-
-    #[test]
-    fn should_render_error_state_in_tab_strip_status_slot_when_pr_load_failed() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Err("network down".to_string()));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let strip = row_text(&buffer, TAB_STRIP_ROW);
-        assert!(
-            strip.contains("error") && strip.contains("network down"),
-            "expected error in tab-strip status slot, got: {strip:?}"
+            footer.contains("q quit"),
+            "expected q quit hint in selector footer, got: {footer:?}"
         );
     }
 
     #[test]
     fn should_render_full_screen_messages_from_target_selector() {
         let mut app = make_app(vec![commit(0)]);
-        app.target_tab = crate::app::TargetTab::PullRequests;
         app.set_error("forge API failure detail");
         app.enter_command_mode();
         app.command_buffer = "messages".to_string();
@@ -1219,7 +454,6 @@ mod selector_render_snapshot_tests {
         assert_eq!(buffer[(width - 1, 0)].symbol(), "┐");
         assert_eq!(buffer[(0, height - 1)].symbol(), "└");
         assert_eq!(buffer[(width - 1, height - 1)].symbol(), "┘");
-        assert!(!row_text(&buffer, TAB_STRIP_ROW).contains("Pull Requests"));
         assert!(rendered.contains("Messages"), "got:\n{rendered}");
         assert!(
             rendered.contains("forge API failure detail"),
@@ -1230,12 +464,11 @@ mod selector_render_snapshot_tests {
     #[test]
     fn should_keep_target_selector_behind_command_and_help_overlays() {
         let mut app = make_app(vec![commit(0)]);
-        app.target_tab = crate::app::TargetTab::PullRequests;
 
         app.enter_command_mode();
         app.command_buffer = "mes".to_string();
         let command_buffer = draw(&mut app);
-        assert!(row_text(&command_buffer, TAB_STRIP_ROW).contains("Pull Requests"));
+        assert!(row_text(&command_buffer, TAB_STRIP_ROW).contains("Local"));
         assert!(row_text(&command_buffer, command_buffer.area.height - 1).contains(":mes"));
         crate::handler::handle_command_action(&mut app, crate::input::Action::ExitMode);
         assert_eq!(app.input_mode, InputMode::CommitSelect);
@@ -1246,126 +479,9 @@ mod selector_render_snapshot_tests {
             .map(|y| row_text(&help_buffer, y))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(row_text(&help_buffer, TAB_STRIP_ROW).contains("Pull Requests"));
+        assert!(row_text(&help_buffer, TAB_STRIP_ROW).contains("Local"));
         assert!(rendered.contains("Help"), "got:\n{rendered}");
         app.toggle_help();
         assert_eq!(app.input_mode, InputMode::CommitSelect);
-    }
-
-    #[test]
-    fn should_render_loading_state_in_tab_strip_status_slot_when_pr_load_in_flight() {
-        // given
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let strip = row_text(&buffer, TAB_STRIP_ROW);
-        assert!(
-            strip.contains("loading"),
-            "expected loading hint in tab strip, got: {strip:?}"
-        );
-    }
-
-    #[test]
-    fn should_render_spinner_glyph_in_place_of_cursor_for_loading_pr_row() {
-        // given
-        use crate::app::PrOpenRequest;
-        use std::time::Instant;
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((
-            vec![
-                pr(148, "Add forge-backed PR review", "alice"),
-                pr(125, "Support fetching/pushing reviews", "ypares"),
-            ],
-            false,
-        )));
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        app.pr_open_state = Some(PrOpenRequest {
-            repository: repo(),
-            pr_number: 148,
-            started_at: Instant::now(),
-        });
-        // when
-        let buffer = draw(&mut app);
-        // then
-        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let lines: Vec<String> = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect();
-        let loading_row = lines
-            .iter()
-            .find(|l| l.contains("#148"))
-            .expect("#148 row missing");
-        assert!(
-            frames.iter().any(|g| loading_row.contains(g)),
-            "loading row should contain a spinner glyph: {loading_row:?}"
-        );
-    }
-
-    #[test]
-    fn should_keep_cursor_pointer_on_other_rows_during_loading() {
-        // given
-        use crate::app::PrOpenRequest;
-        use std::time::Instant;
-        let mut app = make_app(vec![commit(0)]);
-        app.forge_repository = Some(repo());
-        let mut tab = PullRequestsTab::new(Some(repo()));
-        tab.start_initial_load();
-        tab.apply_initial_load(Ok((
-            vec![
-                pr(148, "Add forge-backed PR review", "alice"),
-                pr(125, "Support fetching/pushing reviews", "ypares"),
-            ],
-            false,
-        )));
-        if let PullRequestsTab::Loaded { cursor, .. } = &mut tab {
-            *cursor = 1;
-        }
-        app.pr_tab = tab;
-        app.target_tab = crate::app::TargetTab::PullRequests;
-        app.pr_open_state = Some(PrOpenRequest {
-            repository: repo(),
-            pr_number: 148,
-            started_at: Instant::now(),
-        });
-        // when
-        let buffer = draw(&mut app);
-        // then — #125 row keeps the cursor arrow
-        let lines: Vec<String> = (2..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect();
-        let cursor_row = lines
-            .iter()
-            .find(|l| l.contains("#125"))
-            .expect("#125 row missing");
-        assert!(
-            cursor_row.contains("\u{25b8}"),
-            "cursor row should contain ▸ glyph: {cursor_row:?}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod pr_open_spinner_tests {
-    use super::pr_open_spinner_glyph;
-    use std::time::Duration;
-
-    #[test]
-    fn should_advance_braille_frame_every_100ms() {
-        // given / when / then
-        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(0)), "⠋");
-        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(99)), "⠋");
-        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(100)), "⠙");
-        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(900)), "⠏");
-        assert_eq!(pr_open_spinner_glyph(Duration::from_millis(1000)), "⠋");
     }
 }

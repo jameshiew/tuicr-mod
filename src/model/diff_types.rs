@@ -1,5 +1,4 @@
 use ratatui::style::Style;
-use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::hash::Fnv1aHasher;
@@ -41,8 +40,7 @@ impl FilePatch {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
     Added,
     Modified,

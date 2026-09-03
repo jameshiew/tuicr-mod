@@ -1,12 +1,10 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::comment::Comment;
+use super::comment::{Comment, CommentType};
 use super::diff_types::{DiffFile, FileStatus};
-use crate::forge::remote_comments::PrCommentsVisibility;
-use crate::forge::traits::PrSessionKey;
+use crate::error::{Result, TuicrError};
+use crate::model::{LineRange, LineSide};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClearScope {
@@ -14,16 +12,14 @@ pub enum ClearScope {
     CommentsAndReviewed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FileReview {
     pub path: PathBuf,
     pub reviewed: bool,
     pub status: FileStatus,
     pub file_comments: Vec<Comment>,
     pub line_comments: HashMap<u32, Vec<Comment>>,
-    #[serde(default)]
     pub reviewed_hunks: BTreeSet<String>,
-    #[serde(default)]
     pub content_hash: Option<u64>,
 }
 
@@ -63,9 +59,7 @@ impl FileReview {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionDiffSource {
     #[default]
     WorkingTree,
@@ -75,48 +69,19 @@ pub enum SessionDiffSource {
     CommitRange,
     WorkingTreeAndCommits,
     StagedUnstagedAndCommits,
-    /// Remote pull request review. Per-PR identity lives in
-    /// `ReviewSession::pr_session_key`; this variant is a discriminator so
-    /// the persistence layer can route to PR-specific filename construction.
-    PullRequest,
     /// Whole-repo annotation surface. Every tracked file is shown in
-    /// context-only rendering, sourced from `git ls-files`. The persisted
-    /// `base_commit` for these sessions starts with `"pristine:"` so the
-    /// reload path can match by prefix instead of exact HEAD.
+    /// context-only rendering, sourced from `git ls-files`. The
+    /// `base_commit` for these sessions starts with `"pristine:"`.
     Pristine,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ReviewSession {
-    pub id: String,
-    pub version: String,
     pub repo_path: PathBuf,
-    #[serde(default)]
     pub branch_name: Option<String>,
     pub base_commit: String,
-    #[serde(default)]
     pub diff_source: SessionDiffSource,
-    #[serde(default)]
     pub commit_range: Option<Vec<String>>,
-    /// Identity for PR-mode sessions. `None` for local sessions. Default is
-    /// `None` so existing local session JSON deserializes unchanged.
-    #[serde(default)]
-    pub pr_session_key: Option<PrSessionKey>,
-    /// Per-session visibility setting for existing remote forge comments.
-    /// Only meaningful in PR mode. Defaults to `Unresolved` so a fresh PR
-    /// session — or a session saved before this field existed — shows
-    /// unresolved threads.
-    #[serde(default)]
-    pub remote_comments_visibility: PrCommentsVisibility,
-    /// Persisted inline commit selector range for PR sessions. Indices
-    /// reference the per-head-SHA `pr_commits` list captured at open
-    /// time. `None` means "all commits" (or no selector). Older sessions
-    /// without this field deserialize as `None`.
-    #[serde(default)]
-    pub commit_selection_range: Option<(usize, usize)>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    #[serde(default)]
     pub review_comments: Vec<Comment>,
     pub files: HashMap<PathBuf, FileReview>,
     pub session_notes: Option<String>,
@@ -129,20 +94,12 @@ impl ReviewSession {
         branch_name: Option<String>,
         diff_source: SessionDiffSource,
     ) -> Self {
-        let now = Utc::now();
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            version: "1.3".to_string(),
             repo_path,
             branch_name,
             base_commit,
             diff_source,
             commit_range: None,
-            pr_session_key: None,
-            remote_comments_visibility: PrCommentsVisibility::default(),
-            commit_selection_range: None,
-            created_at: now,
-            updated_at: now,
             review_comments: Vec::new(),
             files: HashMap::new(),
             session_notes: None,
@@ -230,6 +187,102 @@ impl ReviewSession {
             .get(path)
             .is_some_and(|review| review.reviewed_hunks.contains(key))
     }
+}
+
+/// Request to add a local draft comment to a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddCommentRequest {
+    pub target: CommentTarget,
+    pub content: String,
+    pub comment_type: CommentType,
+    /// Author to stamp on the resulting comment. Caller is responsible for
+    /// picking a sensible default (`Comment::DEFAULT_AUTHOR`) when none is
+    /// supplied.
+    pub author: String,
+    /// Commit SHA to stamp on the comment when it was created while the
+    /// inline commit selector showed exactly one commit. `None` for
+    /// review-level comments and full-range selections.
+    pub commit_id: Option<String>,
+}
+
+/// Where a new local draft comment should be attached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentTarget {
+    Review,
+    File {
+        path: PathBuf,
+    },
+    Line {
+        path: PathBuf,
+        line: u32,
+        side: LineSide,
+    },
+    LineRange {
+        path: PathBuf,
+        range: LineRange,
+        side: LineSide,
+    },
+}
+
+/// Add a local draft comment to an in-memory session.
+pub fn add_comment_to_session(
+    session: &mut ReviewSession,
+    request: AddCommentRequest,
+) -> Result<Comment> {
+    let content = request.content.trim().to_string();
+    if content.is_empty() {
+        return Err(TuicrError::InvalidInput(
+            "comment cannot be empty".to_string(),
+        ));
+    }
+
+    let author = request.author;
+    let commit_id = request.commit_id;
+    let comment = match request.target {
+        CommentTarget::Review => {
+            let comment = Comment::new(content, request.comment_type, None).with_author(author);
+            session.review_comments.push(comment.clone());
+            comment
+        }
+        CommentTarget::File { path } => {
+            let review = file_review_mut(session, &path)?;
+            let mut comment = Comment::new(content, request.comment_type, None).with_author(author);
+            if let Some(sha) = &commit_id {
+                comment = comment.with_commit_id(sha.clone());
+            }
+            review.add_file_comment(comment.clone());
+            comment
+        }
+        CommentTarget::Line { path, line, side } => {
+            let review = file_review_mut(session, &path)?;
+            let mut comment =
+                Comment::new(content, request.comment_type, Some(side)).with_author(author);
+            if let Some(sha) = &commit_id {
+                comment = comment.with_commit_id(sha.clone());
+            }
+            review.add_line_comment(line, comment.clone());
+            comment
+        }
+        CommentTarget::LineRange { path, range, side } => {
+            let review = file_review_mut(session, &path)?;
+            let mut comment =
+                Comment::new_with_range(content, request.comment_type, Some(side), range)
+                    .with_author(author);
+            if let Some(sha) = &commit_id {
+                comment = comment.with_commit_id(sha.clone());
+            }
+            review.add_line_comment(range.end, comment.clone());
+            comment
+        }
+    };
+
+    Ok(comment)
+}
+
+fn file_review_mut<'a>(session: &'a mut ReviewSession, path: &Path) -> Result<&'a mut FileReview> {
+    session.get_file_mut(&path.to_path_buf()).ok_or_else(|| {
+        TuicrError::InvalidInput(format!("session does not contain file {}", path.display()))
+    })
 }
 
 #[cfg(test)]
@@ -490,215 +543,6 @@ mod tests {
 
         let file = session.files.get(&path).unwrap();
         assert_eq!(file.content_hash, Some(200));
-    }
-
-    /// Snapshot of a session JSON produced before PR 3 landed. New fields
-    /// must deserialize with defaults; this guards against accidental
-    /// breaking changes to the on-disk format.
-    const LEGACY_SESSION_JSON: &str = r##"{
-        "id": "abc-uuid",
-        "version": "1.2",
-        "repo_path": "/tmp/test-repo",
-        "branch_name": "main",
-        "base_commit": "deadbeef",
-        "diff_source": "working_tree",
-        "created_at": "2026-05-01T12:00:00Z",
-        "updated_at": "2026-05-01T12:00:00Z",
-        "review_comments": [],
-        "files": {},
-        "session_notes": null
-    }"##;
-
-    #[test]
-    fn should_deserialize_pre_pr3_session_without_breakage() {
-        // given a session JSON from before PR 3 landed
-        // when
-        let session: ReviewSession =
-            serde_json::from_str(LEGACY_SESSION_JSON).expect("legacy session should parse");
-        // then — new fields default to None / their default and identity is preserved
-        assert_eq!(session.id, "abc-uuid");
-        assert_eq!(session.base_commit, "deadbeef");
-        assert_eq!(session.diff_source, SessionDiffSource::WorkingTree);
-        assert!(session.pr_session_key.is_none());
-        assert!(session.commit_range.is_none());
-        // Per spec: an older session without remote_comments_visibility
-        // defaults to `Unresolved` on read so PR-mode behavior stays sane.
-        assert_eq!(
-            session.remote_comments_visibility,
-            PrCommentsVisibility::Unresolved
-        );
-    }
-
-    #[test]
-    fn should_round_trip_remote_comments_visibility_on_session() {
-        // given
-        let mut session = ReviewSession::new(
-            PathBuf::from("forge:github.com/agavra/tuicr"),
-            "abcdef0123456789".to_string(),
-            Some("reviews".to_string()),
-            SessionDiffSource::PullRequest,
-        );
-        session.remote_comments_visibility = PrCommentsVisibility::All;
-        // when
-        let json = serde_json::to_string(&session).unwrap();
-        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
-        // then
-        assert_eq!(
-            restored.remote_comments_visibility,
-            PrCommentsVisibility::All
-        );
-    }
-
-    #[test]
-    fn should_round_trip_commit_selection_range_on_pr_session() {
-        // given a PR session with a strict-subset commit range selection
-        let mut session = ReviewSession::new(
-            PathBuf::from("forge:github.com/agavra/tuicr"),
-            "abcdef0123456789".to_string(),
-            Some("reviews".to_string()),
-            SessionDiffSource::PullRequest,
-        );
-        session.commit_selection_range = Some((1, 3));
-        // when
-        let json = serde_json::to_string(&session).unwrap();
-        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
-        // then
-        assert_eq!(restored.commit_selection_range, Some((1, 3)));
-    }
-
-    #[test]
-    fn should_round_trip_comment_commit_id_on_session() {
-        // given a session with a file comment and a line comment both scoped
-        // to a single commit
-        use crate::model::comment::LineSide;
-        let mut session = test_session();
-        session.add_file(PathBuf::from("src/lib.rs"), FileStatus::Modified, SOME_HASH);
-        let file_comment = Comment::new(
-            "file note on commit aaa".to_string(),
-            CommentType::from_id("note"),
-            None,
-        )
-        .with_commit_id("aaa111");
-        let line_comment = Comment::new(
-            "line note on commit bbb".to_string(),
-            CommentType::from_id("issue"),
-            Some(LineSide::New),
-        )
-        .with_commit_id("bbb222");
-        let review = session.get_file_mut(&PathBuf::from("src/lib.rs")).unwrap();
-        review.add_file_comment(file_comment.clone());
-        review.add_line_comment(42, line_comment.clone());
-
-        // when serialized and restored
-        let json = serde_json::to_string(&session).unwrap();
-        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
-
-        // then the commit_id survives the round trip
-        let r = restored.files.get(&PathBuf::from("src/lib.rs")).unwrap();
-        assert_eq!(r.file_comments.len(), 1);
-        assert_eq!(
-            r.file_comments[0].commit_id,
-            Some("aaa111".to_string()),
-            "file comment commit_id must round-trip"
-        );
-        let line = r.line_comments.get(&42).unwrap();
-        assert_eq!(line.len(), 1);
-        assert_eq!(
-            line[0].commit_id,
-            Some("bbb222".to_string()),
-            "line comment commit_id must round-trip"
-        );
-    }
-
-    #[test]
-    fn should_default_commit_id_to_none_for_legacy_comment_json() {
-        // given a comment JSON saved before commit_id existed
-        let json = r#"{
-            "id": "legacy-id",
-            "content": "old note",
-            "comment_type": "note",
-            "created_at": "2024-01-01T00:00:00Z",
-            "line_context": null,
-            "side": null,
-            "line_range": null,
-            "author": "user",
-            "lifecycle_state": "local_draft",
-            "remote_review_id": null,
-            "remote_comment_id": null
-        }"#;
-        // when
-        let comment: Comment = serde_json::from_str(json).unwrap();
-        // then
-        assert_eq!(
-            comment.commit_id, None,
-            "comment JSON without commit_id must default to None"
-        );
-    }
-
-    #[test]
-    fn should_default_commit_selection_range_to_none_for_legacy_session() {
-        // given a session JSON saved before commit_selection_range existed
-        // when
-        let session: ReviewSession =
-            serde_json::from_str(LEGACY_SESSION_JSON).expect("legacy session should parse");
-        // then
-        assert_eq!(session.commit_selection_range, None);
-    }
-
-    #[test]
-    fn should_round_trip_pr_session_via_serde() {
-        // given
-        let mut session = ReviewSession::new(
-            PathBuf::from("forge:github.com/agavra/tuicr"),
-            "abcdef0123456789".to_string(),
-            Some("reviews".to_string()),
-            SessionDiffSource::PullRequest,
-        );
-        let key = PrSessionKey::new(
-            crate::forge::traits::ForgeRepository::github("github.com", "agavra", "tuicr"),
-            125,
-            "abcdef0123456789".to_string(),
-        );
-        session.pr_session_key = Some(key.clone());
-        // when
-        let json = serde_json::to_string(&session).unwrap();
-        let restored: ReviewSession = serde_json::from_str(&json).unwrap();
-        // then
-        assert_eq!(restored.pr_session_key, Some(key));
-        assert_eq!(restored.diff_source, SessionDiffSource::PullRequest);
-    }
-
-    #[test]
-    fn should_default_reviewed_hunks_for_legacy_file_review() {
-        let json = r#"{
-            "path": "src/main.rs",
-            "reviewed": false,
-            "status": "modified",
-            "file_comments": [],
-            "line_comments": {},
-            "content_hash": 123
-        }"#;
-
-        let review: FileReview = serde_json::from_str(json).unwrap();
-        assert!(review.reviewed_hunks.is_empty());
-    }
-
-    #[test]
-    fn should_roundtrip_reviewed_hunks() {
-        let mut session = test_session();
-        let file = test_diff_file("src/main.rs", vec![test_hunk(10, "same")]);
-        let path = file.display_path().clone();
-        let key = file.hunk_review_key(0).unwrap();
-
-        session.add_diff_file(&file);
-        session
-            .get_file_mut(&path)
-            .unwrap()
-            .toggle_hunk_reviewed(key.clone());
-
-        let json = serde_json::to_string(&session).unwrap();
-        let loaded: ReviewSession = serde_json::from_str(&json).unwrap();
-        assert!(loaded.is_hunk_reviewed(&path, &key));
     }
 
     #[test]

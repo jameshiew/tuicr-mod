@@ -15,13 +15,9 @@ use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
     handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
-    handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_summary_action, handle_visual_action,
+    handle_search_action, handle_summary_action, handle_visual_action,
 };
-use tuicr::input::{
-    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
-    map_target_filter_mode,
-};
+use tuicr::input::{Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action};
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
 use tuicr::theme::resolve_theme_with_config;
 use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
@@ -61,10 +57,6 @@ fn main() -> anyhow::Result<()> {
     // Parse CLI arguments and resolve theme
     // This also configures syntax highlighting colors before diff parsing
     let mut cli_args = profile::time("startup.parse_cli_args", parse_cli_args);
-    if let Some(review_command) = cli_args.review_command.take() {
-        tuicr::review_cli::run(review_command)?;
-        return Ok(());
-    }
 
     // Check keyboard enhancement support before enabling raw mode.
     // Skip when --stdout is used because the probe writes escape sequences to stdout,
@@ -174,24 +166,9 @@ fn main() -> anyhow::Result<()> {
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,
-                show_pr_checks: config_outcome
-                    .config
-                    .as_ref()
-                    .and_then(|cfg| cfg.show_pr_checks)
-                    .unwrap_or(false),
-                show_pr_comments: config_outcome
-                    .config
-                    .as_ref()
-                    .and_then(|cfg| cfg.show_pr_comments)
-                    .unwrap_or(true),
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
-                pr_target: cli_args.pr_target.as_deref(),
-                repo_url_override: cli_args
-                    .repo_url
-                    .as_deref()
-                    .and_then(tuicr::forge::parse_any_remote_url),
             },
         )
     }) {
@@ -199,9 +176,6 @@ fn main() -> anyhow::Result<()> {
             app.supports_keyboard_enhancement = keyboard_enhancement_supported;
             startup_warnings.extend(app.vcs.startup_warnings());
             if let Some(cfg) = config_outcome.config.as_ref() {
-                if let Some(forge_cfg) = cfg.forge.clone() {
-                    app.forge_config = forge_cfg;
-                }
                 if let Some(leader) = cfg.leader {
                     app.leader_key = leader;
                 }
@@ -224,8 +198,8 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Error: {e}");
             // The "you need to be in a git repo" hint is only meaningful
             // when the failure was the absence of a repo. For other
-            // startup errors — `tuicr pr <bad-url>`, forge auth issues,
-            // missing PR, `--file <missing-path>` — the hint is wrong.
+            // startup errors — `--file <missing-path>`, etc. — the hint is
+            // wrong.
             if matches!(e, tuicr::error::TuicrError::NotARepository) {
                 if cli_args.all_files {
                     eprintln!(
@@ -247,18 +221,6 @@ fn main() -> anyhow::Result<()> {
     app.commit_order = commit_order;
     app.commit_selection_start = commit_selection;
 
-    if let Err(e) = app.ensure_ephemeral_session_file() {
-        startup_warnings.push(format!("Failed to initialize review session file: {e}"));
-    }
-
-    // Announce the slug for the active session so agents and wrapper scripts
-    // can discover it without parsing the markdown export. This is emitted to
-    // stderr before the alt-screen swap so the line stays on the user's
-    // scrollback after tuicr exits.
-    if let Some(slug) = app.session_slug() {
-        eprintln!("tuicr-session: {slug}");
-    }
-
     // When --stdout is used, render TUI to /dev/tty so stdout is free for export output
     let tty_output: Box<dyn Write> = if cli_args.output_to_stdout {
         Box::new(File::options().write(true).open("/dev/tty")?)
@@ -277,8 +239,6 @@ fn main() -> anyhow::Result<()> {
 
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
-        app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
-        app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
@@ -331,9 +291,6 @@ fn main() -> anyhow::Result<()> {
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
-        if let Some(interval_ms) = cfg.review_watch_interval_ms {
-            app.set_review_watch_interval_ms(interval_ms as u64);
-        }
         if let Some(interval_ms) = cfg.diff_watch_interval_ms {
             app.set_diff_watch_interval_ms(interval_ms as u64);
         }
@@ -378,22 +335,10 @@ fn main() -> anyhow::Result<()> {
 
         needs_redraw |= app.clear_expired_message();
 
-        // Snapshot before polling so the tick that drains a channel (clearing
-        // its rx) still triggers a redraw with the applied result. While work
-        // is pending we redraw every tick anyway so spinners animate.
-        let pr_pending = app.has_pending_pr_work();
-        app.poll_pr_load_events();
-        app.poll_pr_open_events();
-        app.poll_pr_reload_events();
-        app.poll_pr_range_reload_events();
-        app.poll_pr_threads_events();
-        app.poll_pr_submit_events();
         needs_redraw |= app.poll_editor_launches();
-        needs_redraw |= app.poll_persisted_session_changes();
         if !pending_z && !pending_shift_z && !pending_d && !pending_leader {
             needs_redraw |= app.poll_diff_watch_changes();
         }
-        needs_redraw |= pr_pending;
 
         if needs_redraw {
             // Bracket the frame in a synchronized-output pair (CSI ?2026h/l)
@@ -507,8 +452,7 @@ fn main() -> anyhow::Result<()> {
                         pending_shift_z = false;
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
-                                // ZZ: save session, export, and quit (same as :wq)
-                                let _ = app.save_current_session_merging_external();
+                                // ZZ: export and quit (same as :wq)
                                 if app.session.has_comments() {
                                     handler::handle_export_and_quit(&mut app);
                                 } else {
@@ -530,19 +474,9 @@ fn main() -> anyhow::Result<()> {
                         pending_d = false;
                         if key.code == crossterm::event::KeyCode::Char('d') {
                             if app.cursor_on_locked_comment() {
-                                let forge = app.forge_display_name();
-                                app.set_message(format!(
-                                    "Comment already pushed to {forge} — read only in tuicr"
-                                ));
+                                app.set_message("Comment is locked — read only in tuicr");
                             } else if !app.delete_comment_at_cursor() {
-                                if app.cursor_on_remote_thread() {
-                                    let forge = app.forge_display_name();
-                                    app.set_message(format!(
-                                        "{forge} comment — read only in tuicr"
-                                    ));
-                                } else {
-                                    app.set_message("No comment at cursor");
-                                }
+                                app.set_message("No comment at cursor");
                             }
                             continue;
                         }
@@ -610,28 +544,20 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Editing the PR-tab filter is a sub-state of CommitSelect;
-                    // route through the filter-specific key map so typed
-                    // characters update the filter buffer rather than driving
-                    // commit-list navigation.
-                    let mut action = if app.input_mode == InputMode::CommitSelect
-                        && app.pr_filter_editing()
-                    {
-                        map_target_filter_mode(key)
-                    } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()
-                    {
-                        // An open file-tree prompt (`i`/`e`/`/`) captures all
-                        // input until Enter/Esc, like the PR filter above.
-                        map_file_tree_prompt_mode(key)
-                    } else if app.input_mode == InputMode::Normal
-                        && app.focused_panel == FocusedPanel::FileList
-                    {
-                        // The tree claims i/e/I/E and `/` for filtering; the
-                        // diff keeps its own meanings for those keys.
-                        map_file_tree_mode(key, app.leader_key)
-                    } else {
-                        map_key_to_action(key, app.input_mode, app.leader_key)
-                    };
+                    let mut action =
+                        if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing() {
+                            // An open file-tree prompt (`i`/`e`/`/`) captures all
+                            // input until Enter/Esc.
+                            map_file_tree_prompt_mode(key)
+                        } else if app.input_mode == InputMode::Normal
+                            && app.focused_panel == FocusedPanel::FileList
+                        {
+                            // The tree claims i/e/I/E and `/` for filtering; the
+                            // diff keeps its own meanings for those keys.
+                            map_file_tree_mode(key, app.leader_key)
+                        } else {
+                            map_key_to_action(key, app.input_mode, app.leader_key)
+                        };
 
                     // Handle pending command setters (these work in any mode)
                     match action {
@@ -768,9 +694,6 @@ fn main() -> anyhow::Result<()> {
                         InputMode::Comment => handle_comment_action(&mut app, action),
                         InputMode::Command => handle_command_action(&mut app, action),
                         InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
                         _ => {}
                     }
                 }
@@ -784,13 +707,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     terminal.restore()?;
-
-    if let Err(e) = app.cleanup_empty_ephemeral_sessions() {
-        eprintln!("Warning: failed to clean up empty review session: {e}");
-    }
-    if let Err(e) = app.clear_active_session_marker() {
-        eprintln!("Warning: failed to clear active review session marker: {e}");
-    }
 
     // Print pending stdout output if --stdout was used
     if let Some(output) = app.pending_stdout_output {
@@ -810,9 +726,6 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::Confirm => handle_confirm_action(app, action),
         InputMode::CommitSelect => handle_commit_select_action(app, action),
         InputMode::VisualSelect => handle_visual_action(app, action),
-        InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
-        InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
-        InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

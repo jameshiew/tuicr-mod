@@ -418,7 +418,6 @@ mod tests {
             InputMode::Summary,
             Vec::new(),
             None,
-            None,
         )
         .expect("build app")
     }

@@ -96,7 +96,6 @@ fn app_with(files: Vec<DiffFile>) -> App {
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("build app")
 }

@@ -4,8 +4,7 @@
 //! and every ambiguity in `diff --git` display headers are therefore irrelevant.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
 use crate::model::{FilePatch, FileStatus};
@@ -25,29 +24,6 @@ pub(crate) fn parse_raw_patch_output(output: &[u8]) -> Result<Vec<FilePatch>> {
     }
 
     pair_metadata_with_blocks(metadata, patch_blocks)
-}
-
-/// Run Git with the structured diff flags used by non-CLI-backend callers.
-pub(crate) fn run_git_diff(root: &Path, diff_args: &[&str]) -> Result<Vec<FilePatch>> {
-    let output = Command::new("git")
-        .current_dir(root)
-        .args([
-            "diff",
-            "--no-ext-diff",
-            "--raw",
-            "-z",
-            "--patch",
-            "--binary",
-        ])
-        .args(diff_args)
-        .output()
-        .map_err(|error| TuicrError::VcsCommand(format!("Failed to run git: {error}")))?;
-    if !output.status.success() {
-        return Err(TuicrError::VcsCommand(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    parse_raw_patch_output(&output.stdout)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -11,25 +11,12 @@ impl App {
             let new_path = file.new_path.clone();
             let status = file.status;
 
-            let count = if let (DiffSource::PullRequest(pr), Some(backend)) =
-                (&self.diff_source, self.forge_backend.as_ref())
-            {
-                let provider = ForgeContextProvider {
-                    forge: backend.as_ref(),
-                    repository: pr.key.repository.clone(),
-                    base_sha: pr.base_sha.clone(),
-                    head_sha: pr.key.head_sha.clone(),
-                };
-                provider
-                    .file_line_count(old_path.as_ref(), new_path.as_ref(), status)
-                    .ok()
-            } else {
-                let path = new_path.or(old_path).unwrap_or_default();
-                let ref_commit = self.ref_commit().map(|s| s.to_string());
-                self.vcs
-                    .file_line_count(&path, status, ref_commit.as_deref())
-                    .ok()
-            };
+            let path = new_path.or(old_path).unwrap_or_default();
+            let ref_commit = self.ref_commit().map(|s| s.to_string());
+            let count = self
+                .vcs
+                .file_line_count(&path, status, ref_commit.as_deref())
+                .ok();
 
             if let Some(c) = count {
                 self.file_line_count_cache.insert(file_idx, c);
@@ -63,27 +50,9 @@ impl App {
 
         self.line_annotations.clear();
 
-        // Pre-index remote threads by (path, line, side) for quick lookup
-        // during the file/hunk walk. Threads whose visibility is
-        // suppressed don't appear in this map at all, so no annotations
-        // are emitted for them.
-        let remote_index = self.build_remote_thread_index();
         // Commit-selection filter: comments scoped to a commit outside the
         // current inline selection are hidden. `None` => no selector, show all.
         let commit_set = self.selected_commit_set();
-
-        if let Some(info) = &self.pr_info {
-            let pr_line_count = crate::ui::pr_info_panel::build_pr_info_lines(
-                info,
-                crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
-                &self.theme,
-            )
-            .len();
-            for line_idx in 0..pr_line_count {
-                self.line_annotations
-                    .push(AnnotatedLine::PrInfoLine { line_idx });
-            }
-        }
 
         // The review-comments header is omitted in single-file view and
         // until the section has content (see the matching guard in
@@ -93,59 +62,12 @@ impl App {
             self.line_annotations
                 .push(AnnotatedLine::ReviewCommentsHeader);
         }
-        for (summary_idx, summary) in self.forge_review_summaries.iter().enumerate() {
-            let summary_lines = crate::forge::remote_comments::summary_display_lines(summary);
-            for _ in 0..summary_lines {
-                self.line_annotations
-                    .push(AnnotatedLine::RemoteReviewSummaryLine { summary_idx });
-            }
-        }
         for (comment_idx, comment) in self.session.review_comments.iter().enumerate() {
             let comment_lines =
                 Self::comment_display_lines(comment, self.diff_state.viewport_width);
             for _ in 0..comment_lines {
                 self.line_annotations
                     .push(AnnotatedLine::ReviewComment { comment_idx });
-            }
-        }
-
-        // Emit annotation entries for remote review-level threads (line: None).
-        {
-            use crate::forge::remote_comments::{PrCommentsVisibility, thread_display_lines};
-            let visibility = self.session.remote_comments_visibility;
-            if !matches!(visibility, PrCommentsVisibility::Hide) {
-                for (thread_idx, thread) in self.forge_review_threads.iter().enumerate() {
-                    if thread.line.is_some() {
-                        continue;
-                    }
-                    let Some(_muted) = visibility.render_decision(thread) else {
-                        continue;
-                    };
-                    let n = thread_display_lines(thread);
-                    for _ in 0..n {
-                        self.line_annotations
-                            .push(AnnotatedLine::RemoteThreadLine { thread_idx });
-                    }
-                }
-            }
-        }
-
-        if let Some(info) = &self.pr_info
-            && !info.issue_comments.is_empty()
-        {
-            if !self.is_single_file_view {
-                self.line_annotations
-                    .push(AnnotatedLine::IssueCommentsHeader);
-            }
-            for (comment_idx, comment) in info.issue_comments.iter().enumerate() {
-                let comment_lines = crate::ui::pr_info_panel::issue_comment_display_lines(
-                    comment,
-                    self.diff_state.viewport_width,
-                );
-                for _ in 0..comment_lines {
-                    self.line_annotations
-                        .push(AnnotatedLine::IssueComment { comment_idx });
-                }
             }
         }
 
@@ -306,9 +228,6 @@ impl App {
                                 hunk_idx,
                                 &hunk.lines,
                                 &line_comments,
-                                path,
-                                &self.forge_review_threads,
-                                &remote_index,
                                 self.diff_state.viewport_width,
                                 commit_set.as_ref(),
                             );
@@ -320,9 +239,6 @@ impl App {
                                 hunk_idx,
                                 &hunk.lines,
                                 &line_comments,
-                                path,
-                                &self.forge_review_threads,
-                                &remote_index,
                                 self.diff_state.viewport_width,
                                 commit_set.as_ref(),
                             );
@@ -435,74 +351,13 @@ impl App {
         }
     }
 
-    /// Per-file map of `(line, side)` -> indices into `forge_review_threads`.
-    /// Sides use the `RemoteCommentSide` mapping: `Right` -> `LineSide::New`,
-    /// `Left` -> `LineSide::Old`.
-    fn build_remote_thread_index(&self) -> RemoteThreadIndex {
-        use crate::forge::remote_comments::RemoteCommentSide;
-        let mut by_file: std::collections::HashMap<
-            String,
-            std::collections::HashMap<(u32, LineSide), Vec<usize>>,
-        > = std::collections::HashMap::new();
-        let visibility = self.session.remote_comments_visibility;
-
-        for (thread_idx, thread) in self.forge_review_threads.iter().enumerate() {
-            if visibility.render_decision(thread).is_none() {
-                continue;
-            }
-            let Some(line) = thread.line else { continue };
-            let side = match thread.side {
-                RemoteCommentSide::Right => LineSide::New,
-                RemoteCommentSide::Left => LineSide::Old,
-            };
-            by_file
-                .entry(thread.path.clone())
-                .or_default()
-                .entry((line, side))
-                .or_default()
-                .push(thread_idx);
-        }
-
-        RemoteThreadIndex { by_file }
-    }
-
-    fn push_remote_threads(
-        annotations: &mut Vec<AnnotatedLine>,
-        threads: &[crate::forge::remote_comments::RemoteReviewThread],
-        index: &RemoteThreadIndex,
-        path: &std::path::Path,
-        line: u32,
-        side: LineSide,
-    ) {
-        let Some(file_index) = index.by_file.get(path.to_string_lossy().as_ref()) else {
-            return;
-        };
-        let Some(thread_indices) = file_index.get(&(line, side)) else {
-            return;
-        };
-        for thread_idx in thread_indices {
-            if let Some(thread) = threads.get(*thread_idx) {
-                let n = crate::forge::remote_comments::thread_display_lines(thread);
-                for _ in 0..n {
-                    annotations.push(AnnotatedLine::RemoteThreadLine {
-                        thread_idx: *thread_idx,
-                    });
-                }
-            }
-        }
-    }
-
     /// Build annotations for unified diff mode (one annotation per diff line)
-    #[allow(clippy::too_many_arguments)]
     fn build_unified_diff_annotations(
         annotations: &mut Vec<AnnotatedLine>,
         file_idx: usize,
         hunk_idx: usize,
         lines: &[crate::model::DiffLine],
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
-        path: &std::path::Path,
-        remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
-        remote_index: &RemoteThreadIndex,
         viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
@@ -526,14 +381,6 @@ impl App {
                     viewport_width,
                     commit_set,
                 );
-                Self::push_remote_threads(
-                    annotations,
-                    remote_threads,
-                    remote_index,
-                    path,
-                    old_ln,
-                    LineSide::Old,
-                );
             }
 
             // Line comments on new side (added/context lines)
@@ -547,29 +394,17 @@ impl App {
                     viewport_width,
                     commit_set,
                 );
-                Self::push_remote_threads(
-                    annotations,
-                    remote_threads,
-                    remote_index,
-                    path,
-                    new_ln,
-                    LineSide::New,
-                );
             }
         }
     }
 
     /// Build annotations for side-by-side diff mode, pairing deletions and additions into aligned rows.
-    #[allow(clippy::too_many_arguments)]
     fn build_side_by_side_annotations(
         annotations: &mut Vec<AnnotatedLine>,
         file_idx: usize,
         hunk_idx: usize,
         lines: &[crate::model::DiffLine],
         line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
-        path: &std::path::Path,
-        remote_threads: &[crate::forge::remote_comments::RemoteReviewThread],
-        remote_index: &RemoteThreadIndex,
         viewport_width: usize,
         commit_set: Option<&std::collections::HashSet<String>>,
     ) {
@@ -597,17 +432,6 @@ impl App {
                         viewport_width,
                         commit_set,
                     );
-                    if let Some(new_ln) = diff_line.new_lineno {
-                        Self::push_remote_threads(
-                            annotations,
-                            remote_threads,
-                            remote_index,
-                            path,
-                            new_ln,
-                            LineSide::New,
-                        );
-                    }
-
                     i += 1
                 }
 
@@ -663,16 +487,6 @@ impl App {
                             viewport_width,
                             commit_set,
                         );
-                        if let Some(old_ln) = old_lineno {
-                            Self::push_remote_threads(
-                                annotations,
-                                remote_threads,
-                                remote_index,
-                                path,
-                                old_ln,
-                                LineSide::Old,
-                            );
-                        }
                         Self::push_comments(
                             annotations,
                             file_idx,
@@ -682,16 +496,6 @@ impl App {
                             viewport_width,
                             commit_set,
                         );
-                        if let Some(new_ln) = new_lineno {
-                            Self::push_remote_threads(
-                                annotations,
-                                remote_threads,
-                                remote_index,
-                                path,
-                                new_ln,
-                                LineSide::New,
-                            );
-                        }
                     }
 
                     i = add_end;
@@ -715,17 +519,6 @@ impl App {
                         viewport_width,
                         commit_set,
                     );
-                    if let Some(new_ln) = diff_line.new_lineno {
-                        Self::push_remote_threads(
-                            annotations,
-                            remote_threads,
-                            remote_index,
-                            path,
-                            new_ln,
-                            LineSide::New,
-                        );
-                    }
-
                     i += 1;
                 }
             }

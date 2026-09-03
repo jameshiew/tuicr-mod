@@ -4,17 +4,13 @@ pub mod comment_vim;
 pub mod config;
 pub mod editor;
 pub mod error;
-pub mod forge;
 pub mod handler;
 pub mod hash;
 pub mod input;
 pub mod model;
 pub mod output;
-pub mod persistence;
 pub mod process;
 pub mod profile;
-pub mod review_cli;
-pub mod review_store;
 pub mod slug;
 pub mod syntax;
 pub mod terminal_state;
@@ -25,8 +21,7 @@ pub mod ui;
 pub mod vcs;
 
 pub use error::{Result, TuicrError};
-pub use model::{Comment, CommentType, LineRange, LineSide, ReviewSession, SessionDiffSource};
-pub use review_store::{
-    AddCommentRequest, CommentTarget, ReviewStore, SessionRef, SessionSummary,
-    add_comment_to_session,
+pub use model::{
+    AddCommentRequest, Comment, CommentTarget, CommentType, LineRange, LineSide, ReviewSession,
+    SessionDiffSource, add_comment_to_session,
 };

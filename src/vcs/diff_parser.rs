@@ -260,47 +260,6 @@ fn range_fits_u32(start: u32, count: u32) -> bool {
     count == 0 || start.checked_add(count - 1).is_some()
 }
 
-/// Adapt compact hand-written Git fixtures used throughout the unit tests.
-/// Production code must obtain metadata from its backend instead.
-#[cfg(test)]
-pub(crate) fn git_fixture_file_patches(patch: &str) -> Vec<FilePatch> {
-    crate::vcs::git::raw::split_patch_blocks(patch.as_bytes())
-        .into_iter()
-        .map(|block| {
-            let text = String::from_utf8(block.to_vec()).expect("test patch must be UTF-8");
-            let mut lines = text.lines();
-            let header = lines.next().expect("test patch block needs a header");
-            let paths = header
-                .strip_prefix("diff --git a/")
-                .and_then(|rest| rest.split_once(" b/"))
-                .expect("test patch header must use simple a/ and b/ paths");
-            let mut old_path = Some(PathBuf::from(paths.0));
-            let mut new_path = Some(PathBuf::from(paths.1));
-            let mut status = FileStatus::Modified;
-            for line in text.lines() {
-                if line.starts_with("new file mode") {
-                    old_path = None;
-                    status = FileStatus::Added;
-                } else if line.starts_with("deleted file mode") {
-                    new_path = None;
-                    status = FileStatus::Deleted;
-                } else if let Some(path) = line.strip_prefix("rename from ") {
-                    old_path = Some(PathBuf::from(path));
-                    status = FileStatus::Renamed;
-                } else if let Some(path) = line.strip_prefix("rename to ") {
-                    new_path = Some(PathBuf::from(path));
-                } else if let Some(path) = line.strip_prefix("copy from ") {
-                    old_path = Some(PathBuf::from(path));
-                    status = FileStatus::Copied;
-                } else if let Some(path) = line.strip_prefix("copy to ") {
-                    new_path = Some(PathBuf::from(path));
-                }
-            }
-            FilePatch::new(old_path, new_path, status, text)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

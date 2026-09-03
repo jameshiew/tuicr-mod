@@ -347,7 +347,6 @@ mod tests {
             InputMode::Normal,
             Vec::new(),
             None,
-            None,
         )
         .expect("build app");
         app.show_file_list = true;

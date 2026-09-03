@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use ratatui::style::Color;
@@ -9,72 +9,26 @@ use crate::comment_vim::CommentVimEditor;
 use crate::config::{CommentTypeConfig, ExportConfig};
 use crate::editor::{EditorLaunch, EditorTarget};
 use crate::error::{Result, TuicrError};
-use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
-use crate::forge::selector::PullRequestsTab;
-use crate::forge::traits::{ForgeBackend, ForgeRepository};
-use crate::model::review::FileReview;
 use crate::model::{
-    ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
-    LineRange, LineSide, ReviewSession, SessionDiffSource,
+    AddCommentRequest, ClearScope, Comment, CommentTarget, CommentType, DiffFile, DiffHunk,
+    DiffLine, FileStatus, LineOrigin, LineRange, LineSide, ReviewSession, SessionDiffSource,
+    add_comment_to_session,
 };
-use crate::persistence::load_latest_session_for_context;
-use crate::review_store::{AddCommentRequest, CommentTarget, add_comment_to_session};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::traits::VcsType;
 use crate::vcs::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference,
     ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
-pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
 pub const DEFAULT_DIFF_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const GAP_EXPAND_BATCH: usize = 20;
-
-/// Create a forge backend for the given repository.
-/// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
-/// the Bitbucket Cloud backend (via `bkt`), or the Azure DevOps backend (via
-/// `az`) based on `repo.kind`.
-fn create_forge_backend(
-    repo: &ForgeRepository,
-    local_checkout: Option<PathBuf>,
-    show_pr_checks: bool,
-    show_pr_comments: bool,
-) -> Box<dyn ForgeBackend> {
-    use crate::forge::traits::ForgeKind;
-    match repo.kind {
-        ForgeKind::GitHub => {
-            use crate::forge::github::gh::GitHubGhBackend;
-            Box::new(
-                GitHubGhBackend::new(Some(repo.clone()))
-                    .with_local_checkout(local_checkout)
-                    .with_pr_checks(show_pr_checks)
-                    .with_pr_comments(show_pr_comments),
-            )
-        }
-        ForgeKind::GitLab => {
-            use crate::forge::gitlab::GitLabGlabBackend;
-            Box::new(GitLabGlabBackend::new(Some(repo.clone())).with_local_checkout(local_checkout))
-        }
-        ForgeKind::Bitbucket => {
-            use crate::forge::bitbucket::BitbucketBktBackend;
-            Box::new(
-                BitbucketBktBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
-            )
-        }
-        ForgeKind::AzureDevOps => {
-            use crate::forge::azure::AzureDevOpsBackend;
-            Box::new(
-                AzureDevOpsBackend::new(Some(repo.clone())).with_local_checkout(local_checkout),
-            )
-        }
-    }
-}
 
 fn char_slice(s: &str, lo_char: usize, hi_char: Option<usize>) -> &str {
     let mut indices = s.char_indices();
@@ -272,19 +226,10 @@ pub enum GapCursorHit {
 /// Describes what a rendered line represents - built once and used for O(1) cursor queries
 #[derive(Debug, Clone)]
 pub enum AnnotatedLine {
-    /// A rendered line of [`App::pr_info`] content
-    PrInfoLine { line_idx: usize },
-    /// Top-level PR conversation comments section header
-    IssueCommentsHeader,
-    /// A rendered line of a top-level PR issue comment box
-    IssueComment { comment_idx: usize },
     /// Review comments section header line
     ReviewCommentsHeader,
     /// A review-level comment line (part of a multi-line comment box)
     ReviewComment { comment_idx: usize },
-    /// A read-only line of a rendered remote review summary (PR review body).
-    /// Renders at review scope, parallel to `ReviewComment` for local drafts.
-    RemoteReviewSummaryLine { summary_idx: usize },
     /// File header line
     FileHeader { file_idx: usize },
     /// "Marked reviewed" banner shown in single-file view when the focused
@@ -328,39 +273,10 @@ pub enum AnnotatedLine {
         side: LineSide,
         comment_idx: usize,
     },
-    /// A read-only line of a rendered remote review thread. Cursor cannot
-    /// edit or reply to these in v1; the annotation is informational so
-    /// hit-testing and scroll math stay correct.
-    RemoteThreadLine { thread_idx: usize },
     /// Binary or empty file indicator
     BinaryOrEmpty { file_idx: usize },
     /// Spacing between files
     Spacing,
-}
-
-/// Per-file index of remote threads keyed by `(line, side)` so the
-/// renderer / annotation builder can place threads inline at the right
-/// anchor without scanning all threads on every diff line.
-#[derive(Debug, Default, Clone)]
-pub struct RemoteThreadIndex {
-    /// Outer key = file path (display form). Inner key =
-    /// `(line, side)` where `side` is the *local* `LineSide` mapping.
-    pub by_file:
-        std::collections::HashMap<String, std::collections::HashMap<(u32, LineSide), Vec<usize>>>,
-}
-
-impl RemoteThreadIndex {
-    #[allow(dead_code)]
-    pub fn threads_at(
-        &self,
-        path: &std::path::Path,
-        line: u32,
-        side: LineSide,
-    ) -> Option<&Vec<usize>> {
-        self.by_file
-            .get(path.to_string_lossy().as_ref())
-            .and_then(|m| m.get(&(line, side)))
-    }
 }
 
 /// Result of searching for a source line number in annotations.
@@ -394,69 +310,6 @@ pub fn annotation_side_default(annotation: &AnnotatedLine) -> LineSide {
     }
 }
 
-/// Map a forge-side `PullRequestCommit` into the VCS-shaped `CommitInfo`
-/// the inline commit selector renders against. We keep two arrays — the
-/// forge truth in `App::pr_commits` and the rendered form in
-/// `App::review_commits` — so the selector renderer stays agnostic of
-/// whether the source is local or remote.
-pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit) -> CommitInfo {
-    CommitInfo {
-        id: commit.oid.clone(),
-        short_id: commit.short_oid.clone(),
-        branch_name: None,
-        summary: commit.summary.clone(),
-        body: None,
-        author: commit.author.clone(),
-        time: commit.timestamp.unwrap_or_else(chrono::Utc::now),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SinceLastReviewSelection {
-    range: Option<(usize, usize)>,
-    reviewed_index: usize,
-    message: String,
-}
-
-fn commits_since_last_review_selection(
-    commits_newest_first: &[crate::forge::traits::PullRequestCommit],
-    review_metadata: &crate::forge::traits::PullRequestReviewMetadata,
-) -> Option<SinceLastReviewSelection> {
-    let viewer = review_metadata.viewer_login.as_deref()?;
-    let last_review = review_metadata
-        .reviews
-        .iter()
-        .filter(|review| {
-            review
-                .author
-                .as_deref()
-                .is_some_and(|author| author.eq_ignore_ascii_case(viewer))
-        })
-        .filter(|review| review.submitted_at.is_some() && review.commit_oid.is_some())
-        .max_by(|a, b| a.submitted_at.cmp(&b.submitted_at))?;
-
-    let reviewed_commit = last_review.commit_oid.as_deref()?;
-    let reviewed_index = commits_newest_first
-        .iter()
-        .position(|commit| commit.oid == reviewed_commit)?;
-
-    if reviewed_index == 0 {
-        return Some(SinceLastReviewSelection {
-            range: None,
-            reviewed_index,
-            message: "No commits since your last review".to_string(),
-        });
-    }
-
-    let count = reviewed_index;
-    let noun = if count == 1 { "commit" } else { "commits" };
-    Some(SinceLastReviewSelection {
-        range: Some((0, reviewed_index - 1)),
-        reviewed_index,
-        message: format!("Showing {count} {noun} since your last review — press Enter to see all"),
-    })
-}
-
 pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
     match annotation {
         AnnotatedLine::FileHeader { file_idx }
@@ -467,16 +320,11 @@ pub fn annotation_file_idx(annotation: &AnnotatedLine) -> Option<usize> {
         | AnnotatedLine::SideBySideLine { file_idx, .. }
         | AnnotatedLine::LineComment { file_idx, .. }
         | AnnotatedLine::BinaryOrEmpty { file_idx } => Some(*file_idx),
-        AnnotatedLine::PrInfoLine { .. }
-        | AnnotatedLine::IssueCommentsHeader
-        | AnnotatedLine::IssueComment { .. }
-        | AnnotatedLine::ReviewCommentsHeader
+        AnnotatedLine::ReviewCommentsHeader
         | AnnotatedLine::ReviewComment { .. }
-        | AnnotatedLine::RemoteReviewSummaryLine { .. }
         | AnnotatedLine::Expander { .. }
         | AnnotatedLine::HiddenLines { .. }
         | AnnotatedLine::ExpandedContext { .. }
-        | AnnotatedLine::RemoteThreadLine { .. }
         | AnnotatedLine::Spacing => None,
     }
 }
@@ -583,17 +431,6 @@ pub enum InputMode {
     Confirm,
     CommitSelect,
     VisualSelect,
-    /// Modal listing comments that cannot be mapped to GitHub inline review
-    /// comments. The user toggles between "move to summary" / "omit" for
-    /// each row, then `s` advances to `SubmitConfirm`.
-    SubmitResolver,
-    /// Final confirmation modal before the network create-review call.
-    SubmitConfirm,
-    /// Event picker opened by bare `:submit` — the user chooses
-    /// Comment/Approve/Request changes/Draft. Picking IS the confirmation;
-    /// no `SubmitConfirm` follows (resolver still runs if any comment is
-    /// unmappable).
-    SubmitActionPicker,
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -619,13 +456,6 @@ pub enum DiffSource {
     StagedAndUnstaged,
     CommitRange(Vec<String>),
     StagedUnstagedAndCommits(Vec<String>),
-    /// Remote PR review. Carries identity + base/head SHAs needed for
-    /// context expansion and status bar labels.
-    ///
-    /// Boxed because `PullRequestDiffSource` is much larger than the other
-    /// variants; keeping it inline would balloon `DiffSource` for every
-    /// local-review caller.
-    PullRequest(Box<PullRequestDiffSource>),
 }
 
 impl DiffSource {
@@ -646,115 +476,10 @@ impl DiffSource {
     }
 }
 
-/// Runtime PR identity for `DiffSource::PullRequest`.
-///
-/// The `PrSessionKey` portion is what scopes persistence; the additional
-/// fields are display state derived once at open time so the status bar and
-/// context expansion don't have to call back into the forge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PullRequestDiffSource {
-    pub key: crate::forge::traits::PrSessionKey,
-    pub base_sha: String,
-    pub title: String,
-    pub url: String,
-    pub head_ref_name: String,
-    pub base_ref_name: String,
-    pub state: String,
-    pub closed: bool,
-    pub merged: bool,
-}
-
-impl PullRequestDiffSource {
-    pub fn from_details(details: &crate::forge::traits::PullRequestDetails) -> Self {
-        Self {
-            key: crate::forge::traits::PrSessionKey::from_details(details),
-            base_sha: details.base_sha.clone(),
-            title: details.title.clone(),
-            url: details.url.clone(),
-            head_ref_name: details.head_ref_name.clone(),
-            base_ref_name: details.base_ref_name.clone(),
-            state: details.state.clone(),
-            closed: details.closed,
-            merged: details.merged_at.is_some(),
-        }
-    }
-
-    pub fn read_only_reason(&self) -> Option<&'static str> {
-        if self.merged {
-            Some("merged")
-        } else if self.closed {
-            Some("closed")
-        } else {
-            None
-        }
-    }
-
-    pub fn is_read_only(&self) -> bool {
-        self.read_only_reason().is_some()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
 }
-
-/// Push a `MappedComment` onto the appropriate bucket. Free function so the
-/// preflight walk doesn't need to keep `self` borrowed mutably.
-fn bucket_mapping(
-    mapped: crate::forge::submit::MappedComment,
-    mappable: &mut Vec<crate::forge::submit::InlineComment>,
-    unmappable: &mut Vec<crate::forge::submit::UnmappableItem>,
-) {
-    use crate::forge::submit::{MappedComment, UnmappableItem};
-    match mapped {
-        MappedComment::Inline(inline) => mappable.push(inline),
-        MappedComment::Unmappable {
-            comment,
-            file,
-            reason,
-        } => unmappable.push(UnmappableItem {
-            comment,
-            file,
-            reason,
-        }),
-    }
-}
-
-/// In-flight `:submit*` state, populated by preflight and consumed by the
-/// resolver + confirmation modals. Lives on `App::submit_state` so the same
-/// preflight output can flow from resolver to confirmation without recomputing.
-#[derive(Debug, Clone)]
-pub struct SubmitState {
-    pub event: crate::forge::submit::SubmitEvent,
-    /// Comments that mapped cleanly to inline GitHub review comments.
-    pub mappable: Vec<crate::forge::submit::InlineComment>,
-    /// Comments that did not map, paired with the resolver action the user
-    /// has chosen for each (defaults to `MoveToSummary` per spec).
-    pub unmappable: Vec<crate::forge::submit::UnmappableItem>,
-    pub resolver_choices: Vec<crate::forge::submit::ResolverAction>,
-    /// Cursor row inside the resolver modal.
-    pub resolver_cursor: usize,
-    /// Originally-reviewed head SHA — used as `commit_id` in the payload.
-    pub commit_id: String,
-    /// When `true`, the resolver advances directly to the network call
-    /// instead of routing through `SubmitConfirm`. Set by the action-picker
-    /// path; left `false` for explicit `:submit <event>` invocations.
-    pub skip_confirm: bool,
-}
-
-/// Event options shown in the bare-`:submit` action picker, in display
-/// order. Each row pairs the user-facing label with the `SubmitEvent` it
-/// dispatches.
-pub const SUBMIT_PICKER_EVENTS: &[(&str, crate::forge::submit::SubmitEvent)] = &[
-    ("Comment", crate::forge::submit::SubmitEvent::Comment),
-    ("Approve", crate::forge::submit::SubmitEvent::Approve),
-    (
-        "Request changes",
-        crate::forge::submit::SubmitEvent::RequestChanges,
-    ),
-    ("Draft", crate::forge::submit::SubmitEvent::Draft),
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusedPanel {
@@ -770,111 +495,6 @@ pub enum FocusedPanel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetTab {
     Local,
-    PullRequests,
-    Sessions,
-}
-
-/// Background-thread events that the PR tab consumes through `pr_load_rx`.
-#[derive(Debug)]
-pub enum PrLoadEvent {
-    /// Result of the initial PR list fetch. `canonical` carries the
-    /// repository the fetch was actually executed against — i.e. the result
-    /// of the canonical (fork-parent) resolver — so the main thread can
-    /// promote `App.forge_repository` to it before applying the rows.
-    Initial {
-        canonical: crate::forge::traits::ForgeRepository,
-        result: std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>,
-    },
-    /// Result of a "load more" fetch.
-    LoadMore(std::result::Result<(Vec<crate::forge::traits::PullRequestSummary>, bool), String>),
-}
-
-/// In-flight PR open. Stored on `App::pr_open_state` so the selector
-/// renderer can paint a spinner glyph on the matching row and the
-/// handler can gate further input until the load resolves.
-#[derive(Debug, Clone)]
-pub struct PrOpenRequest {
-    pub repository: crate::forge::traits::ForgeRepository,
-    pub pr_number: u64,
-    /// Wall-clock origin for the spinner animation. Derived in the App
-    /// (not the renderer) so the spinner phase is stable across redraws.
-    pub started_at: Instant,
-}
-
-impl PrOpenRequest {
-    /// True when this in-flight open is for the given PR row.
-    pub fn matches(&self, repo: &crate::forge::traits::ForgeRepository, number: u64) -> bool {
-        self.pr_number == number && &self.repository == repo
-    }
-}
-
-/// Result delivered from the PR-open background thread.
-#[derive(Debug)]
-pub enum PrOpenEvent {
-    Done {
-        request: PrOpenRequest,
-        /// Network-only outcome. Parsing + session build runs on the main
-        /// thread after this lands so `SyntaxHighlighter` does not need to
-        /// cross thread boundaries.
-        result: std::result::Result<crate::forge::pr_open::PrFetchData, String>,
-    },
-}
-
-/// A semantic anchor for the cursor — what we captured before kicking
-/// off `:e`, and what we try to re-locate after the new diff lands.
-/// Identifies the cursor's last-known position in terms of file path
-/// and line numbers rather than the volatile annotation index.
-#[derive(Debug, Clone)]
-pub struct PrCursorAnchor {
-    pub path: std::path::PathBuf,
-    pub new_lineno: Option<u32>,
-    pub old_lineno: Option<u32>,
-}
-
-/// In-flight `:e` reload of the current PR. Drives the status-bar
-/// spinner and carries the cursor anchor we want to restore after the
-/// reload lands.
-#[derive(Debug, Clone)]
-pub struct PrReloadRequest {
-    pub repository: crate::forge::traits::ForgeRepository,
-    pub pr_number: u64,
-    pub head_sha: String,
-    pub started_at: Instant,
-    pub anchor: Option<PrCursorAnchor>,
-    pub restore_overview_cursor: Option<usize>,
-}
-
-/// Result delivered from the PR-reload background thread.
-#[derive(Debug)]
-pub enum PrReloadEvent {
-    Done {
-        request: PrReloadRequest,
-        result: std::result::Result<crate::forge::pr_open::PrFetchData, String>,
-    },
-}
-
-/// In-flight commit-range re-fetch (PR mode). Drives a status-bar spinner
-/// and carries the cursor anchor we want to restore once the range diff
-/// lands.
-#[derive(Debug, Clone)]
-pub struct PrRangeReloadRequest {
-    pub repository: crate::forge::traits::ForgeRepository,
-    pub pr_number: u64,
-    pub head_sha: String,
-    pub start_sha: String,
-    pub end_sha: String,
-    pub range: (usize, usize),
-    pub started_at: Instant,
-    pub anchor: Option<PrCursorAnchor>,
-}
-
-/// Result delivered from the PR range re-fetch background thread.
-#[derive(Debug)]
-pub enum PrRangeReloadEvent {
-    Done {
-        request: PrRangeReloadRequest,
-        result: std::result::Result<Vec<crate::model::FilePatch>, String>,
-    },
 }
 
 /// Identity snapshot for an in-flight diff-watch reload, captured when the
@@ -926,71 +546,6 @@ pub struct DiffWatchReload {
     pub rx: std::sync::mpsc::Receiver<DiffWatchReloadEvent>,
 }
 
-/// Snapshot of the submit state needed to lock the matching local comments
-/// after the background `gh api .../reviews` call returns. Captured at
-/// time and stashed on `App::pr_submit_state` so the in-flight spinner has
-/// something to render and the result handler can flip lifecycle state on
-/// every comment that was sent.
-///
-/// Locked comments stay visible after submit so the user keeps seeing their
-/// just-submitted work; they're pruned out of the session the next time
-/// `forge_review_threads` is refreshed (via `:e` or reopen) so the freshly
-/// fetched remote copies don't render alongside stale locals.
-#[derive(Debug, Clone)]
-pub struct SubmitInFlightState {
-    pub event: crate::forge::submit::SubmitEvent,
-    /// The mappable inline comments that were sent in the payload. Each
-    /// carries the source `Comment.id` so we can locate it post-success.
-    pub mappable: Vec<crate::forge::submit::InlineComment>,
-    /// Source `Comment.id`s of unmappable items the user chose to move into
-    /// the review body's "Unplaced comments" section.
-    pub summary_comment_ids: Vec<String>,
-    /// Source `Comment.id`s of review-level comments that were rendered into
-    /// the review body.
-    pub review_comment_ids: Vec<String>,
-    /// Display count of moved-to-summary items, used only by the success
-    /// message (kept separate from `summary_comment_ids` so message wording
-    /// doesn't accidentally drift if the id list is empty).
-    pub moved_to_summary_count: usize,
-    /// Head SHA at preflight — used as `commit_id` in the GitHub payload and
-    /// to discard stale results if the user reloaded the PR mid-submit.
-    pub head_sha_snapshot: String,
-    /// Repository + PR identity. Lets the stale-result guard verify the
-    /// result still applies to the same PR session.
-    pub repository: crate::forge::traits::ForgeRepository,
-    pub pr_number: u64,
-    pub started_at: Instant,
-}
-
-/// Result delivered from the create-review background thread.
-#[derive(Debug)]
-pub enum PrSubmitEvent {
-    Done {
-        repository: crate::forge::traits::ForgeRepository,
-        pr_number: u64,
-        head_sha: String,
-        result: std::result::Result<crate::forge::traits::GhCreateReviewResponse, String>,
-    },
-}
-
-/// Result delivered from the remote-thread fetch background thread. The PR
-/// diff is rendered as soon as it parses; threads land asynchronously and
-/// trigger a repaint via `poll_pr_threads_events`.
-#[derive(Debug)]
-pub enum PrThreadsEvent {
-    Done {
-        /// Forge identity for the request; used to discard stale results if
-        /// the user has since opened a different PR.
-        repository: crate::forge::traits::ForgeRepository,
-        pr_number: u64,
-        head_sha: String,
-        threads:
-            std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewThread>, String>,
-        summaries:
-            std::result::Result<Vec<crate::forge::remote_comments::RemoteReviewSummary>, String>,
-    },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DiffViewMode {
     Unified,
@@ -1038,35 +593,6 @@ pub struct Message {
 const MESSAGE_TTL_INFO: Duration = Duration::from_secs(3);
 const MESSAGE_TTL_WARNING: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SessionFileState {
-    modified: Option<SystemTime>,
-    len: u64,
-}
-
-impl SessionFileState {
-    fn from_path(path: &Path) -> Result<Self> {
-        let metadata = std::fs::metadata(path)?;
-        Ok(Self {
-            modified: metadata.modified().ok(),
-            len: metadata.len(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StoredComment {
-    location: StoredCommentLocation,
-    comment: Comment,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum StoredCommentLocation {
-    Review,
-    File { path: PathBuf },
-    Line { path: PathBuf, line: u32 },
-}
-
 /// Pending "press again to confirm" state for the vim comment box. A first
 /// plain `Enter`/`Esc` in Normal mode arms `Save`/`Cancel` and shows a header
 /// hint; a second consecutive press performs it. Any other key resets to `None`.
@@ -1082,21 +608,7 @@ pub struct App {
     pub theme: Theme,
     pub vcs: Box<dyn VcsBackend>,
     pub vcs_info: VcsInfo,
-    /// The on-disk repo root tuicr was launched in, when there is one.
-    ///
-    /// Entering PR mode replaces `vcs_info.root_path` with the synthetic
-    /// `forge:host/owner/repo` session identity, so it can't be used to find
-    /// the local clone once a PR is open. This field is set once at startup
-    /// and never swapped, which is what lets a *second* PR opened from the PR
-    /// tab still resolve the checkout (`.tuicrignore` filtering, local file
-    /// context, and Azure DevOps diffs, which have no unified-diff API).
-    pub(crate) local_repo_root: Option<PathBuf>,
     pub session: ReviewSession,
-    pub(crate) persisted_session_snapshot: ReviewSession,
-    pub(crate) session_path: Option<PathBuf>,
-    pub(crate) session_file_state: Option<SessionFileState>,
-    pub review_watch_interval: Option<Duration>,
-    pub next_review_watch_at: Instant,
     /// A `0` interval in config disables automatic local refreshes.
     pub diff_watch_interval: Option<Duration>,
     pub next_diff_watch_at: Instant,
@@ -1117,7 +629,6 @@ pub struct App {
     /// `App::new`. Kept as one value so a future setting is added in one
     /// place rather than at every construction path.
     vcs_open_options: VcsOpenOptions,
-    pub(crate) ephemeral_session_paths: HashSet<PathBuf>,
     pub diff_files: Vec<DiffFile>,
     pub diff_source: DiffSource,
     pub pending_editor_target: Option<EditorTarget>,
@@ -1197,102 +708,13 @@ pub struct App {
     pub commit_page_size: usize,
     pub has_more_commit: bool,
 
-    // Review target selector tab state. The selector reuses InputMode::CommitSelect
-    // but is conceptually a "target" picker with Local and Pull Requests tabs.
+    // Review target selector tab state.
     pub target_tab: TargetTab,
-    /// GitHub forge repository used for all PR operations. Initially set
-    /// from the local `origin` remote; replaced with the canonical (parent)
-    /// repository on first PR-tab entry, or pre-empted by `--repo-url`.
-    pub forge_repository: Option<ForgeRepository>,
-    /// Explicit `--repo-url` override. When `Some`, the canonical resolver
-    /// skips the `gh api` parent lookup and uses this value directly.
-    pub repo_url_override: Option<ForgeRepository>,
-    /// True once the canonical resolver has run for this session — avoids
-    /// repeating the `gh api` parent lookup on every PR-tab visit.
-    pub canonical_resolved: bool,
-    /// State machine for the Pull Requests tab.
-    pub pr_tab: PullRequestsTab,
-    /// Viewport height of the PR list (set during render).
-    pub pr_list_viewport_height: usize,
-    /// Inner content rect of the PR list panel (set during render).
-    pub pr_list_inner_area: Option<ratatui::layout::Rect>,
-    /// When `Some`, the user is editing the local PR filter. Captured keys
-    /// update this draft; pressing Enter commits it to the tab state.
-    pub pr_filter_draft: Option<String>,
-    /// State for the Sessions tab: persisted reviews for this checkout.
-    pub sessions_tab: crate::app::sessions_tab::SessionsTab,
-    /// Viewport height of the session list (set during render).
-    pub sessions_list_viewport_height: usize,
-    /// Background-thread channel that delivers PR list fetch results.
-    /// `Receiver` is only present while a fetch is in flight.
-    pub pr_load_rx: Option<std::sync::mpsc::Receiver<PrLoadEvent>>,
-    /// In-flight PR open. Drives the inline row spinner and gates further
-    /// Enter presses while the network calls run on a background thread.
-    pub pr_open_state: Option<PrOpenRequest>,
-    /// Background-thread channel that delivers the result of a PR open.
-    /// `Receiver` is only present while an open is in flight.
-    pub pr_open_rx: Option<std::sync::mpsc::Receiver<PrOpenEvent>>,
-    /// In-flight `:e` reload. Drives the status-bar spinner and stores
-    /// the cursor anchor we want to restore after the new diff lands.
-    pub pr_reload_state: Option<PrReloadRequest>,
-    /// Background-thread channel that delivers the result of a PR reload.
-    pub pr_reload_rx: Option<std::sync::mpsc::Receiver<PrReloadEvent>>,
-    /// Forge backend instance live while in PR diff mode. Used by the
-    /// context provider for gap expansion against base/head SHAs and (in a
-    /// future PR) for remote comment fetch/submit.
-    pub forge_backend: Option<Box<dyn ForgeBackend>>,
-    /// Remote review threads fetched from the forge for the active PR.
-    /// Populated asynchronously after the diff renders (see
-    /// `poll_pr_threads_events`). Empty in non-PR modes and during the
-    /// loading window.
-    pub forge_review_threads: Vec<crate::forge::remote_comments::RemoteReviewThread>,
-    /// Review-level summary comments (body text on each `PullRequestReview`).
-    /// Populated alongside `forge_review_threads`. These render at the top
-    /// of the diff, parallel to local `session.review_comments` drafts.
-    pub forge_review_summaries: Vec<crate::forge::remote_comments::RemoteReviewSummary>,
-    /// True while a background remote-thread fetch is in flight for the
-    /// currently open PR. Drives the footer "Loading remote comments…"
-    /// hint and skips re-fetch if `:e` is hit again before the first
-    /// fetch lands.
-    pub forge_review_threads_loading: bool,
-    /// Background-thread channel that delivers remote-thread fetch results.
-    /// `Receiver` is only present while a fetch is in flight.
-    pub pr_threads_rx: Option<std::sync::mpsc::Receiver<PrThreadsEvent>>,
-
-    /// `[forge]` section settings resolved at startup. Drives the body/footer
-    /// formatting on submit. Defaults to `ForgeConfig::default()` when the
-    /// section is missing.
-    pub forge_config: crate::config::ForgeConfig,
     /// Local viewer identity. Stamped on new comments authored in the TUI,
     /// and compared against existing comment authors so the comment pane can
     /// distinguish "your" comments from others. Resolved from the config
     /// `username` field; defaults to `Comment::DEFAULT_AUTHOR`.
     pub username: String,
-    /// In-flight `:submit*` state. `None` outside the resolver + confirmation
-    /// modal flow; preflight populates it.
-    pub submit_state: Option<SubmitState>,
-    /// Cursor row inside the bare-`:submit` action picker modal. Only
-    /// meaningful while `input_mode == SubmitActionPicker`.
-    pub submit_picker_cursor: usize,
-    /// In-flight `gh api .../reviews` call. `Some` while a background submit
-    /// is running; cleared by `poll_pr_submit_events` once the result lands.
-    /// Drives the status-bar spinner.
-    pub pr_submit_state: Option<SubmitInFlightState>,
-    /// Background-thread channel that delivers the create-review result.
-    /// `Receiver` is only present while a submit is in flight.
-    pub pr_submit_rx: Option<std::sync::mpsc::Receiver<PrSubmitEvent>>,
-    /// Latest known PR head SHA from the remote. PR 5 leaves this as the
-    /// open-time head so the stale-head warning never fires; PR 6 may refresh
-    /// it via a pre-submit `gh pr view` to power the warning.
-    pub current_pr_head: Option<String>,
-    /// Extended PR metadata rendered at the top of the diff view. Populated in PR mode.
-    pub pr_info: Option<crate::forge::traits::PullRequestInfo>,
-    /// Whether pull-request CI checks are fetched and rendered. Defaults to
-    /// false; configured before the first direct PR load.
-    pub show_pr_checks: bool,
-    /// Whether pull-request conversation comments are fetched and rendered.
-    /// Defaults to true; configured before the first direct PR load.
-    pub show_pr_comments: bool,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -1386,19 +808,6 @@ pub struct App {
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
     pub review_commits: Vec<CommitInfo>,
-    /// Forge-side commit list for the active PR (display order: newest first).
-    /// Empty outside PR mode. Used as the source of truth for resolving a
-    /// `commit_selection_range` back to (start_sha, end_sha) when toggling.
-    pub pr_commits: Vec<crate::forge::traits::PullRequestCommit>,
-    /// Index in `pr_commits`/`review_commits` of the newest commit covered
-    /// by the viewer's latest submitted review. Commits at this index and
-    /// older get a reviewed marker in the inline selector.
-    pub pr_last_reviewed_commit_index: Option<usize>,
-    /// In-flight range re-fetch driven by toggling commits in the inline
-    /// selector while in PR mode. Drives a spinner in the status bar.
-    pub pr_range_reload_state: Option<PrRangeReloadRequest>,
-    /// Background-thread channel for the active range re-fetch.
-    pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
     /// Display order for the inline commit selector (presentation only).
@@ -1496,18 +905,11 @@ pub enum CommentNavigatorKey {
         side: LineSide,
         comment_idx: usize,
     },
-    Remote {
-        thread_idx: usize,
-    },
-    RemoteReview {
-        summary_idx: usize,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentNavigatorKind {
     Local(CommentType),
-    Remote { muted: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1518,9 +920,7 @@ pub struct CommentNavigatorItem {
     pub path: Option<String>,
     pub line: Option<u32>,
     pub side: Option<LineSide>,
-    /// Author of the underlying comment — the local commenter for local items,
-    /// or the root comment's author for remote threads. `None` only when the
-    /// forge did not attach an author (e.g. deleted user).
+    /// Author of the underlying comment.
     pub author: Option<String>,
 }
 
@@ -1759,21 +1159,10 @@ pub struct AppStartupOptions<'a> {
     /// Whole-repo annotation mode (`--all-files`). Mutually exclusive with
     /// the other selectors; the binary validates that before reaching here.
     pub all_files: bool,
-    /// Whether pull-request CI checks are fetched and rendered.
-    pub show_pr_checks: bool,
-    /// Whether pull-request conversation comments are fetched and rendered.
-    pub show_pr_comments: bool,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection: CommitSelectionStart,
-    /// Direct PR target (`tuicr pr <target>`). Mutually exclusive with the
-    /// other selectors above; the binary validates that before reaching here.
-    pub pr_target: Option<&'a str>,
-    /// `--repo-url` override for PR operations, already parsed into a
-    /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
-    /// the `gh api` parent lookup and uses this value directly.
-    pub repo_url_override: Option<ForgeRepository>,
 }
 
 impl AppStartupOptions<'_> {
@@ -1797,12 +1186,9 @@ mod gaps;
 mod init;
 mod modes;
 mod navigation;
-mod pr;
 mod reviewed;
 mod search;
 mod session;
-pub mod sessions_tab;
-mod submit;
 mod tree;
 mod visual;
 

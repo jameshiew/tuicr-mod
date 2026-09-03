@@ -71,9 +71,8 @@ pub fn collect_tracked_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
 /// `"none"` sentinel if HEAD is unborn (e.g. a freshly-initialized repo
 /// with no commits) or any subprocess error occurs.
 ///
-/// The result is used as a component of pristine session keys; an
-/// advancing HEAD changes the key but the persistence-layer prefix-match
-/// keeps comments attached across `git pull`.
+/// The result is used as a component of the pristine session's descriptive
+/// `base_commit` identity.
 #[must_use]
 pub fn head_short_sha(repo_root: &Path) -> String {
     let output = match Command::new("git")

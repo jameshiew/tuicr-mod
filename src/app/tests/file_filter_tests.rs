@@ -101,7 +101,6 @@ fn app_with(paths: &[&str]) -> App {
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("build app");
     app.is_single_file_view = false;

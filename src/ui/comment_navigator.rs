@@ -68,16 +68,6 @@ fn render_comment_row(app: &App, item: &CommentNavigatorItem) -> Line<'static> {
                 styles::comment_type_style(&app.theme, app.comment_type_color(comment_type)),
             )
         }
-        CommentNavigatorKind::Remote { muted } => {
-            let style = if *muted {
-                styles::dim_style(&app.theme)
-            } else {
-                Style::default()
-                    .fg(app.theme.diff_hunk_header)
-                    .add_modifier(Modifier::BOLD)
-            };
-            ("R".to_string(), style)
-        }
     };
 
     let dim_style = styles::dim_style(&app.theme);

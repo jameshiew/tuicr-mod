@@ -429,7 +429,6 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
@@ -450,42 +449,6 @@ impl App {
     /// This must record `SessionDiffSource::WorkingTree`. The source is part of
     /// the session identity, even though this loader and the staged-plus-
     /// unstaged loader read the same diff.
-    pub(in crate::app) fn load_working_tree_selection(&mut self) -> Result<()> {
-        let highlighter = self.theme.syntax_highlighter();
-        let diff_files = match Self::get_working_tree_diff_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        ) {
-            Ok(diff_files) => diff_files,
-            Err(TuicrError::NoChanges) => {
-                self.set_message("No working tree changes");
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
-
-        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::WorkingTree);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.reset_persisted_session_tracking();
-
-        self.diff_files = diff_files;
-        self.diff_source = DiffSource::WorkingTree;
-        self.input_mode = InputMode::Normal;
-        self.focus_initial_review_panel();
-        self.diff_state = DiffState::default();
-        self.file_list_state = FileListState::default();
-        self.clear_expanded_gaps();
-        self.sort_files_by_directory(true);
-        self.expand_all_dirs();
-        self.rebuild_annotations();
-
-        Ok(())
-    }
-
     pub(in crate::app) fn load_staged_selection(&mut self) -> Result<()> {
         let highlighter = self.theme.syntax_highlighter();
         let diff_files = match Self::get_staged_diff_with_ignore(
@@ -506,7 +469,6 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Staged;
@@ -542,7 +504,6 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
@@ -559,11 +520,6 @@ impl App {
     }
 
     /// Fetches diff files for the current `diff_source`.
-    ///
-    /// Returns `Err(UnsupportedOperation)` for `DiffSource::PullRequest`: PR
-    /// reload is a separate code path that may switch sessions when the head
-    /// SHA advances, so callers dispatch via `reload_pull_request` instead of
-    /// going through this local-reload helper.
     fn fetch_diff_files(&self) -> Result<Vec<DiffFile>> {
         self.fetch_diff_files_with(self.theme.syntax_highlighter())
     }
@@ -739,9 +695,6 @@ impl App {
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
                 Self::get_working_tree_diff_with_ignore(vcs, root_path, highlighter, path_filter)
             }
-            DiffSource::PullRequest(_) => Err(TuicrError::UnsupportedOperation(
-                "Use :reload from the command line in PR mode".to_string(),
-            )),
         }
     }
 
@@ -941,7 +894,6 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
@@ -951,8 +903,6 @@ impl App {
         self.file_list_state = FileListState::default();
 
         // Set up inline commit selector (newest-first display order)
-        self.pr_commits.clear();
-        self.pr_last_reviewed_commit_index = None;
         self.review_commits = selected_commits.into_iter().rev().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
@@ -1031,15 +981,11 @@ impl App {
         let Some(interval) = self.diff_watch_interval else {
             return DiffWatchTick::Idle;
         };
-        // `PullRequest` has its own reload path (`reload_pull_request`).
         // `is_pristine_mode` (`--all-files`) and `VcsType::File` (`--file`)
         // both back onto `FileBackend`, which the worker cannot reopen: it
         // resolves a backend via `detect_vcs`, which only ever discovers a
         // real git/jj/hg repository at the process cwd.
-        if matches!(self.diff_source, DiffSource::PullRequest(_))
-            || self.is_pristine_mode
-            || self.vcs_info.vcs_type == VcsType::File
-        {
+        if self.is_pristine_mode || self.vcs_info.vcs_type == VcsType::File {
             return DiffWatchTick::Idle;
         }
         if now < self.next_diff_watch_at {
@@ -1051,8 +997,8 @@ impl App {
         }
 
         // A fetch is already running, so skip rather than supersede it. A
-        // periodic tick carries no new intent to prioritize, unlike a
-        // user-triggered PR range toggle. The next tick retries.
+        // periodic tick carries no new intent to prioritize. The next tick
+        // retries.
         if self.diff_watch_reload.is_some() {
             return DiffWatchTick::Defer(interval);
         }

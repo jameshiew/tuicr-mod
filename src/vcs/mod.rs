@@ -16,7 +16,6 @@ pub mod file;
 pub mod git;
 mod hg;
 mod jj;
-pub mod pr_noop;
 pub mod pristine;
 pub(crate) mod traits;
 
@@ -24,7 +23,6 @@ pub use file::FileBackend;
 pub use git::{GitBackend, GitBackendPreference};
 pub use hg::HgBackend;
 pub use jj::JjBackend;
-pub use pr_noop::PrNoopVcs;
 pub use traits::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
     VcsBackend, VcsChangeStatus, VcsInfo,

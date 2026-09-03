@@ -146,26 +146,11 @@ impl App {
         }
 
         let display_path = file.display_path().clone();
-        // PR mode's root_path is the synthetic forge:host/owner/repo
-        // identity, never a real directory.
-        let root = if self.vcs_info.root_path.is_absolute() {
-            Some(self.vcs_info.root_path.clone())
-        } else {
-            self.forge_backend
-                .as_deref()
-                .and_then(|backend| backend.local_checkout_path())
-        };
-        let Some(root) = root else {
-            self.set_warning(format!(
-                "Cannot open {}: no local checkout",
-                display_path.display()
-            ));
-            return;
-        };
+        let root = self.vcs_info.root_path.clone();
 
         let path = root.join(&display_path);
-        // Deleted files and remote-only PR files have diff rows,
-        // but no worktree file the external editor can open.
+        // Deleted files have diff rows but no worktree file the external
+        // editor can open.
         if !path.exists() {
             self.set_warning(format!(
                 "Cannot open {}: file does not exist",

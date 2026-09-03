@@ -8,7 +8,6 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
-use crate::forge::traits::ForgeKind;
 use crate::model::LineRange;
 use crate::theme::Theme;
 use crate::ui::styles;
@@ -293,145 +292,6 @@ pub fn format_comment_input_lines(
     (result, cursor_info)
 }
 
-/// Format an entire remote (read-only) forge review thread as one fused
-/// box so it reads as a single discussion unit. Root comment opens the
-/// box; replies appear as `├─ ↳ @author ──` separator headers within the
-/// same box; the bottom rule appears once at the end.
-///
-/// Visually distinct from local drafts: the `[forge @author]` badge on
-/// the root header, and a muted palette throughout for resolved/outdated
-/// threads.
-pub fn format_remote_thread_lines(
-    theme: &Theme,
-    thread: &crate::forge::remote_comments::RemoteReviewThread,
-    muted: bool,
-    forge_kind: Option<ForgeKind>,
-) -> Vec<Line<'static>> {
-    let (badge_fg, border_fg, body_fg) = if muted {
-        (theme.fg_dim, theme.fg_dim, theme.fg_dim)
-    } else {
-        (
-            theme.diff_hunk_header,
-            theme.diff_hunk_header,
-            theme.fg_secondary,
-        )
-    };
-
-    let badge_style = Style::default().fg(badge_fg).add_modifier(Modifier::BOLD);
-    let reply_badge_style = Style::default().fg(badge_fg);
-    let border_style = Style::default().fg(border_fg);
-    let body_style = Style::default().fg(body_fg);
-
-    let line_info = match thread.line.map(LineRange::single) {
-        Some(range) if range.is_single() => format!("L{} ", range.start),
-        Some(range) => format!("L{}-L{} ", range.start, range.end),
-        None => String::new(),
-    };
-
-    // Remote review threads always anchor on a specific line/range, so the
-    // top corner is a tee — the bar painter draws the rest going up.
-    let mut result = Vec::new();
-    let mut iter = thread.comments.iter().peekable();
-    let mut is_first = true;
-    while let Some(comment) = iter.next() {
-        let author = comment.author.as_deref().unwrap_or("unknown");
-        if is_first {
-            let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
-            if thread.is_resolved {
-                badge_text.push_str(" resolved");
-            } else if thread.is_outdated {
-                badge_text.push_str(" outdated");
-            }
-            badge_text.push_str("] ");
-            result.push(Line::from(vec![
-                Span::styled("    ├── ".to_string(), border_style),
-                Span::styled(badge_text, badge_style),
-                Span::styled(line_info.clone(), styles::dim_style(theme)),
-                Span::styled("─".repeat(20), border_style),
-            ]));
-        } else {
-            result.push(Line::from(vec![
-                Span::styled("    ├── ".to_string(), border_style),
-                Span::styled(format!("↳ @{author} "), reply_badge_style),
-                Span::styled("─".repeat(28), border_style),
-            ]));
-        }
-
-        for line in comment.body.split('\n') {
-            result.push(Line::from(vec![
-                Span::styled("    │  ".to_string(), border_style),
-                Span::styled(line.to_string(), body_style),
-            ]));
-        }
-
-        is_first = false;
-        let _ = iter.peek();
-    }
-
-    result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(39),
-        border_style,
-    )]));
-
-    result
-}
-
-/// Format a remote review summary (the body of a `PullRequestReview`) as a
-/// box with a `[forge @author <state>]` header. Renders at review scope —
-/// no line anchor — so the top corner is `╭`, not the line-anchored `├`.
-pub fn format_remote_review_summary_lines(
-    theme: &Theme,
-    summary: &crate::forge::remote_comments::RemoteReviewSummary,
-    forge_kind: Option<ForgeKind>,
-) -> Vec<Line<'static>> {
-    let badge_fg = theme.diff_hunk_header;
-    let border_fg = theme.diff_hunk_header;
-    let body_fg = theme.fg_secondary;
-
-    let badge_style = Style::default().fg(badge_fg).add_modifier(Modifier::BOLD);
-    let border_style = Style::default().fg(border_fg);
-    let body_style = Style::default().fg(body_fg);
-
-    let author = summary.author.as_deref().unwrap_or("unknown");
-    let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
-    if let Some(state_label) = summary.state.badge_label() {
-        badge_text.push(' ');
-        badge_text.push_str(state_label);
-    }
-    badge_text.push_str("] ");
-
-    let mut result = Vec::new();
-    result.push(Line::from(vec![
-        Span::styled("    ╭── ".to_string(), border_style),
-        Span::styled(badge_text, badge_style),
-        Span::styled("─".repeat(28), border_style),
-    ]));
-
-    for line in summary.body.split('\n') {
-        result.push(Line::from(vec![
-            Span::styled("    │  ".to_string(), border_style),
-            Span::styled(line.to_string(), body_style),
-        ]));
-    }
-
-    result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(39),
-        border_style,
-    )]));
-
-    result
-}
-
-fn forge_badge_label(kind: Option<ForgeKind>) -> &'static str {
-    match kind {
-        Some(ForgeKind::GitHub) => "github",
-        Some(ForgeKind::GitLab) => "gitlab",
-        Some(ForgeKind::Bitbucket) => "bitbucket",
-        Some(ForgeKind::AzureDevOps) => "azure",
-        None => "forge",
-    }
-}
-
 /// Render `content` as markdown-highlighted, pre-wrapped lines. Colors come
 /// from the active syntect theme.
 pub(crate) fn markdown_body_lines(
@@ -463,8 +323,7 @@ pub(crate) fn markdown_body_lines(
 ///
 /// `author` advertises the comment's author in the top-row badge and tints
 /// the box border. Callers pass `Some(name)` for non-self comments — the
-/// resulting badge reads `[TYPE @name]`, mirroring the remote forge badge
-/// format used for remote PR threads. `None` keeps the existing neutral
+/// resulting badge reads `[TYPE @name]`. `None` keeps the existing neutral
 /// `[TYPE]` badge and theme border.
 pub fn format_comment_lines(
     theme: &Theme,
@@ -1052,58 +911,5 @@ mod tests {
             content_spans > 1,
             "expected markdown highlighting to split the line, got {content_spans} span(s)"
         );
-    }
-
-    #[test]
-    fn remote_thread_badge_uses_gitlab_for_gitlab_comments() {
-        let thread = crate::forge::remote_comments::RemoteReviewThread {
-            id: "thread".to_string(),
-            path: "src/lib.rs".to_string(),
-            line: Some(1),
-            side: crate::forge::remote_comments::RemoteCommentSide::Right,
-            is_resolved: false,
-            is_outdated: false,
-            comments: vec![crate::forge::remote_comments::RemoteReviewComment {
-                id: "comment".to_string(),
-                author: Some("alice".to_string()),
-                body: "body".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
-            }],
-        };
-
-        let lines =
-            format_remote_thread_lines(&test_theme(), &thread, false, Some(ForgeKind::GitLab));
-        let header = lines[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-
-        assert!(header.contains("[gitlab @alice]"));
-        assert!(!header.contains("[github @alice]"));
-    }
-
-    #[test]
-    fn remote_summary_badge_uses_github_for_github_comments() {
-        let summary = crate::forge::remote_comments::RemoteReviewSummary {
-            id: "summary".to_string(),
-            author: Some("alice".to_string()),
-            body: "body".to_string(),
-            state: crate::forge::remote_comments::RemoteReviewState::Commented,
-            created_at: None,
-            url: String::new(),
-        };
-
-        let lines =
-            format_remote_review_summary_lines(&test_theme(), &summary, Some(ForgeKind::GitHub));
-        let header = lines[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-
-        assert!(header.contains("[github @alice]"));
     }
 }

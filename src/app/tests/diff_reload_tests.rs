@@ -159,7 +159,6 @@ fn build_app_with_scripted_vcs(initial_files: Vec<DiffFile>, vcs: ScriptedVcs) -
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("failed to build test app")
 }

@@ -16,11 +16,11 @@
 //! formatted spans are measured here with the same outer wrap pass used by
 //! the renderers.
 
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 
 use crate::app::{AnnotatedLine, App, DiffViewMode, sbs_overhead};
+use crate::ui::diff_view;
 use crate::ui::text_utils::wrap_spans;
-use crate::ui::{comment_panel, diff_view};
 
 pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
     if !app.diff_state.wrap_lines {
@@ -42,47 +42,10 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
     };
 
     match annotation {
-        AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => app
-            .forge_review_summaries
-            .get(*summary_idx)
-            .and_then(|summary| {
-                let row = repeated_annotation_row(app, idx, annotation);
-                comment_panel::format_remote_review_summary_lines(
-                    &app.theme,
-                    summary,
-                    app.forge_kind(),
-                )
-                .into_iter()
-                .nth(row)
-            })
-            .map_or(1, |line| formatted_line_height(line, viewport_width)),
-
-        AnnotatedLine::RemoteThreadLine { thread_idx } => app
-            .forge_review_threads
-            .get(*thread_idx)
-            .and_then(|thread| {
-                let muted = app
-                    .session
-                    .remote_comments_visibility
-                    .render_decision(thread)
-                    .unwrap_or(false);
-                let row = repeated_annotation_row(app, idx, annotation);
-                comment_panel::format_remote_thread_lines(
-                    &app.theme,
-                    thread,
-                    muted,
-                    app.forge_kind(),
-                )
-                .into_iter()
-                .nth(row)
-            })
-            .map_or(1, |line| formatted_line_height(line, viewport_width)),
-
         // Pre-wrapped by comment_panel::wrap_segments to inner width - 1.
         AnnotatedLine::ReviewComment { .. }
         | AnnotatedLine::FileComment { .. }
-        | AnnotatedLine::LineComment { .. }
-        | AnnotatedLine::IssueComment { .. } => 1,
+        | AnnotatedLine::LineComment { .. } => 1,
 
         AnnotatedLine::SideBySideLine {
             file_idx,
@@ -111,35 +74,6 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             wrap_len(&text, viewport_width)
         }
     }
-}
-
-fn repeated_annotation_row(app: &App, idx: usize, annotation: &AnnotatedLine) -> usize {
-    app.line_annotations[..idx]
-        .iter()
-        .rev()
-        .take_while(|candidate| match (candidate, annotation) {
-            (
-                AnnotatedLine::RemoteReviewSummaryLine {
-                    summary_idx: candidate,
-                },
-                AnnotatedLine::RemoteReviewSummaryLine { summary_idx },
-            ) => candidate == summary_idx,
-            (
-                AnnotatedLine::RemoteThreadLine {
-                    thread_idx: candidate,
-                },
-                AnnotatedLine::RemoteThreadLine { thread_idx },
-            ) => candidate == thread_idx,
-            _ => false,
-        })
-        .count()
-}
-
-fn formatted_line_height(mut line: Line<'static>, viewport_width: usize) -> usize {
-    // Both renderers prepend a one-cell cursor indicator before passing the
-    // logical line through their full-width outer wrap pass.
-    line.spans.insert(0, Span::raw(" "));
-    wrap_spans(&line.spans, viewport_width).len()
 }
 
 fn wrap_len(text: &str, width: usize) -> usize {
@@ -205,41 +139,6 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 diff_view::REVIEW_COMMENTS_HEADER_PREFIX,
                 diff_view::HEADER_RULE
             )
-        }
-
-        AnnotatedLine::IssueCommentsHeader => {
-            let number = app.pr_info.as_ref().map_or(0, |info| info.details.number);
-            format!(
-                "{indicator_spaced}═══ PR #{number} Comments {}",
-                diff_view::HEADER_RULE
-            )
-        }
-
-        // Reconstruct the concatenated text of the pre-built PR-info line so
-        // the outer wrap pass counts the same rows the renderer emits.
-        AnnotatedLine::PrInfoLine { line_idx: pr_line } => {
-            let body: String = app
-                .pr_info
-                .as_ref()
-                .and_then(|info| {
-                    crate::ui::pr_info_panel::build_pr_info_lines(
-                        info,
-                        crate::ui::pr_info_panel::pr_info_content_width(
-                            app.diff_state.viewport_width,
-                        ),
-                        &app.theme,
-                    )
-                    .into_iter()
-                    .nth(*pr_line)
-                })
-                .map(|line| {
-                    line.spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
-            format!("{indicator_spaced}{body}")
         }
 
         AnnotatedLine::FileHeader { file_idx } => match app.diff_files.get(*file_idx) {
@@ -372,11 +271,8 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
 
         // Comment-ish rows are pre-wrapped and handled by the outer match.
         AnnotatedLine::ReviewComment { .. }
-        | AnnotatedLine::RemoteReviewSummaryLine { .. }
         | AnnotatedLine::FileComment { .. }
-        | AnnotatedLine::LineComment { .. }
-        | AnnotatedLine::IssueComment { .. }
-        | AnnotatedLine::RemoteThreadLine { .. } => indicator.to_string(),
+        | AnnotatedLine::LineComment { .. } => indicator.to_string(),
     }
 }
 
@@ -402,16 +298,10 @@ mod tests {
     //! annotation variants so future edits can't silently drop branches.
     use super::*;
     use crate::app::{
-        App, DiffSource, DiffViewMode, ExpandDirection, GapId, InputMode, PullRequestDiffSource,
-        SummaryCommentTarget,
+        App, DiffSource, DiffViewMode, ExpandDirection, GapId, InputMode, SummaryCommentTarget,
     };
     use crate::error::Result as TuicrResult;
     use crate::error::TuicrError;
-    use crate::forge::remote_comments::{
-        RemoteCommentSide, RemoteReviewComment, RemoteReviewState, RemoteReviewSummary,
-        RemoteReviewThread,
-    };
-    use crate::forge::traits::{ForgeRepository, PrSessionKey};
     use crate::model::{
         Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide,
         ReviewSession, SessionDiffSource,
@@ -560,31 +450,18 @@ mod tests {
     }
 
     fn make_app() -> App {
-        let repo = ForgeRepository::github("github.com", "test", "tuicr");
-        let pr = PullRequestDiffSource {
-            key: PrSessionKey::new(repo, 1, "headsha".to_string()),
-            base_sha: "base".to_string(),
-            title: "t".to_string(),
-            url: "u".to_string(),
-            head_ref_name: "feat".to_string(),
-            base_ref_name: "main".to_string(),
-            state: "OPEN".to_string(),
-            closed: false,
-            merged: false,
-        };
         let vcs_info = VcsInfo {
-            root_path: PathBuf::from("forge:github.com/test/tuicr"),
+            root_path: PathBuf::from("/tmp/tuicr-test"),
             head_commit: "headsha".to_string(),
             branch_name: Some("feat".to_string()),
             vcs_type: VcsType::File,
         };
-        let mut session = ReviewSession::new(
+        let session = ReviewSession::new(
             vcs_info.root_path.clone(),
             "headsha".to_string(),
             Some("feat".to_string()),
-            SessionDiffSource::PullRequest,
+            SessionDiffSource::WorkingTree,
         );
-        session.pr_session_key = Some(pr.key.clone());
         let mut app = App::build(
             Box::new(StubVcs {
                 info: vcs_info.clone(),
@@ -595,10 +472,9 @@ mod tests {
             false,
             vec![code_file(), binary_file()],
             session,
-            DiffSource::PullRequest(Box::new(pr)),
+            DiffSource::WorkingTree,
             InputMode::Normal,
             Vec::new(),
-            None,
             None,
         )
         .expect("build app");
@@ -619,30 +495,6 @@ mod tests {
             CommentType::from_id("praise"),
             None,
         ));
-        app.forge_review_summaries = vec![RemoteReviewSummary {
-            id: "summary-1".to_string(),
-            author: Some("reviewer".to_string()),
-            body: "a long review summary ".repeat(12),
-            state: RemoteReviewState::ChangesRequested,
-            created_at: None,
-            url: "https://example.com/review".to_string(),
-        }];
-        app.forge_review_threads = vec![RemoteReviewThread {
-            id: "thread-1".to_string(),
-            path: "src/lib.rs".to_string(),
-            line: Some(31),
-            side: RemoteCommentSide::Right,
-            is_resolved: false,
-            is_outdated: false,
-            comments: vec![RemoteReviewComment {
-                id: "comment-1".to_string(),
-                author: Some("reviewer".to_string()),
-                body: "a long inline review comment ".repeat(12),
-                created_at: None,
-                in_reply_to: None,
-                url: "https://example.com/comment".to_string(),
-            }],
-        }];
         // `sort_files_by_directory` reorders diff_files by parent directory,
         // so `assets/logo.png` lands before `src/lib.rs`; find the code file
         // by path rather than assuming its post-sort index.
@@ -732,10 +584,8 @@ mod tests {
             AnnotatedLine::Expander { .. } => Some("Expander"),
             AnnotatedLine::HiddenLines { .. } => Some("HiddenLines"),
             AnnotatedLine::ExpandedContext { .. } => Some("ExpandedContext"),
-            AnnotatedLine::RemoteReviewSummaryLine { .. } => Some("RemoteReviewSummaryLine"),
             AnnotatedLine::LineComment { .. } => Some("LineComment"),
             AnnotatedLine::FileComment { .. } => Some("FileComment"),
-            AnnotatedLine::RemoteThreadLine { .. } => Some("RemoteThreadLine"),
             AnnotatedLine::Spacing => Some("Spacing"),
             AnnotatedLine::BinaryOrEmpty { .. } => Some("BinaryOrEmpty"),
             AnnotatedLine::ReviewedBanner { .. } => Some("ReviewedBanner"),
@@ -764,10 +614,8 @@ mod tests {
             "Expander",
             "HiddenLines",
             "ExpandedContext",
-            "RemoteReviewSummaryLine",
             "LineComment",
             "FileComment",
-            "RemoteThreadLine",
             "Spacing",
             "BinaryOrEmpty",
         ]
@@ -784,24 +632,6 @@ mod tests {
         );
     }
 
-    fn assert_remote_rows_wrap(app: &App) {
-        for label in ["summary", "thread"] {
-            let wrapped = app
-                .line_annotations
-                .iter()
-                .enumerate()
-                .filter(|(_, annotation)| match label {
-                    "summary" => {
-                        matches!(annotation, AnnotatedLine::RemoteReviewSummaryLine { .. })
-                    }
-                    "thread" => matches!(annotation, AnnotatedLine::RemoteThreadLine { .. }),
-                    _ => false,
-                })
-                .any(|(idx, _)| annotation_row_height(app, idx) > 1);
-            assert!(wrapped, "expected at least one remote {label} row to wrap");
-        }
-    }
-
     #[test]
     fn parity_unified_with_wrap() {
         let mut app = make_app();
@@ -810,7 +640,6 @@ mod tests {
         // second file, is fully visible and captured by `observed_heights`.
         render_diff(&mut app, DiffViewMode::Unified, 40, 200);
         assert_coverage(&app, DiffViewMode::Unified);
-        assert_remote_rows_wrap(&app);
         assert_parity(&app);
     }
 
@@ -820,7 +649,6 @@ mod tests {
         app.set_diff_wrap(true);
         render_diff(&mut app, DiffViewMode::SideBySide, 60, 200);
         assert_coverage(&app, DiffViewMode::SideBySide);
-        assert_remote_rows_wrap(&app);
         assert_parity(&app);
     }
 

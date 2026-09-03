@@ -5,8 +5,6 @@ use crate::app::{
     self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
     GapCursorHit, InputMode, TargetTab, VisualSelection,
 };
-use crate::forge::remote_comments::PrCommentsVisibility;
-use crate::forge::submit::SubmitEvent;
 use crate::input::Action;
 use crate::model::{ClearScope, LineSide};
 use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
@@ -27,12 +25,10 @@ const QUIT_HINT_MESSAGE: &str = "q no longer quits — use :q to quit";
 const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["q", "quit"], CommandKind::Quit),
     CommandSpec::new(&["q!", "quit!"], CommandKind::ForceQuit),
-    CommandSpec::new(&["w", "write"], CommandKind::Write),
     CommandSpec::new(&["x", "wq"], CommandKind::WriteQuit),
     CommandSpec::new(&["e", "reload"], CommandKind::Reload),
     CommandSpec::new(&["edit"], CommandKind::Edit),
     CommandSpec::new(&["clip", "export"], CommandKind::Export),
-    CommandSpec::new(&["copy-url"], CommandKind::CopyUrl),
     CommandSpec::new(
         &["clear"],
         CommandKind::Clear(ClearScope::CommentsAndReviewed),
@@ -75,38 +71,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["commits", "targets"],
         CommandKind::Targets(TargetTab::Local),
     ),
-    CommandSpec::new(&["prs"], CommandKind::Targets(TargetTab::PullRequests)),
-    CommandSpec::new(
-        &["sessions", "reviews"],
-        CommandKind::Targets(TargetTab::Sessions),
-    ),
-    CommandSpec::new(&["submit"], CommandKind::SubmitPicker),
-    CommandSpec::new(
-        &["submit comment"],
-        CommandKind::Submit(SubmitEvent::Comment),
-    ),
-    CommandSpec::new(
-        &["submit approve"],
-        CommandKind::Submit(SubmitEvent::Approve),
-    ),
-    CommandSpec::new(
-        &["submit request-changes"],
-        CommandKind::Submit(SubmitEvent::RequestChanges),
-    ),
-    CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
     CommandSpec::new(&["summary"], CommandKind::Summary),
-    CommandSpec::new(
-        &["comments unresolved"],
-        CommandKind::Comments(PrCommentsVisibility::Unresolved),
-    ),
-    CommandSpec::new(
-        &["comments all"],
-        CommandKind::Comments(PrCommentsVisibility::All),
-    ),
-    CommandSpec::new(
-        &["comments hide"],
-        CommandKind::Comments(PrCommentsVisibility::Hide),
-    ),
 ];
 
 /// CommandSpec is the single registry entry used by both completion and
@@ -130,12 +95,10 @@ impl CommandSpec {
 enum CommandKind {
     Quit,
     ForceQuit,
-    Write,
     WriteQuit,
     Reload,
     Edit,
     Export,
-    CopyUrl,
     Clear(ClearScope),
     Help,
     MessageDetails,
@@ -155,9 +118,6 @@ enum CommandKind {
     Focus,
     Stage,
     Targets(TargetTab),
-    SubmitPicker,
-    Submit(SubmitEvent),
-    Comments(PrCommentsVisibility),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,32 +338,15 @@ fn handle_left_click(app: &mut App, pos: Position) {
     }
 }
 
-fn handle_copy_pr_url(app: &mut App) {
-    let app::DiffSource::PullRequest(pr) = &app.diff_source else {
-        app.set_warning(":copy-url only applies in PR mode");
-        return;
-    };
-    let url = pr.url.clone();
-
-    match copy_text_to_clipboard(&url) {
-        Ok(true) => app.set_message("PR URL copied to clipboard (via terminal)"),
-        Ok(false) => app.set_message("PR URL copied to clipboard"),
-        Err(e) => app.set_warning(format!("Failed to copy PR URL: {e}")),
-    }
-}
-
 /// Export review: either to clipboard or set pending stdout output based on app.output_to_stdout.
 /// When output_to_stdout is true, stores the content and sets should_quit.
 fn handle_export(app: &mut App) {
-    let slug = app.session_slug();
     if app.output_to_stdout {
         match generate_export_content(
             &app.session,
             &app.diff_source,
             &app.comment_types,
             &app.export,
-            &app.forge_review_threads,
-            slug.as_deref(),
         ) {
             Ok(content) => {
                 app.pending_stdout_output = Some(content);
@@ -417,8 +360,6 @@ fn handle_export(app: &mut App) {
             &app.diff_source,
             &app.comment_types,
             &app.export,
-            &app.forge_review_threads,
-            slug.as_deref(),
         ) {
             Ok(msg) => app.set_message(msg),
             Err(e) => app.set_warning(format!("{e}")),
@@ -431,12 +372,7 @@ fn handle_export(app: &mut App) {
 /// a chat message or an agent prompt.
 fn handle_copy_comment_at_cursor(app: &mut App) {
     let Some(content) = app.comment_content_at_cursor() else {
-        if app.cursor_on_remote_thread() {
-            let forge = app.forge_display_name();
-            app.set_message(format!("Y copies local comments; this one is on {forge}"));
-        } else {
-            app.set_message("No comment at cursor");
-        }
+        app.set_message("No comment at cursor");
         return;
     };
     match copy_text_to_clipboard(&content) {
@@ -821,9 +757,9 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             if app.dirty && app.session.has_comments() {
                 app.set_error("No write since last change (add ! to override)");
             } else if app.dirty {
-                // Dirty from reviewed-file markers only: discard the state and
-                // quit instead of requiring `:q!`.
-                app.discard_session_and_quit();
+                // Dirty from reviewed-file markers only: quit instead of
+                // requiring `:q!`.
+                app.should_quit = true;
             } else {
                 app.should_quit = true;
             }
@@ -833,32 +769,18 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.should_quit = true;
             CommandAfterDispatch::ExitCommandMode
         }
-        CommandKind::Write => {
-            match app.save_current_session_merging_external() {
-                Ok(path) => {
-                    app.set_message(format!("Saved to {}", path.display()));
-                }
-                Err(e) => app.set_error(format!("Save failed: {e}")),
-            }
-            CommandAfterDispatch::ExitCommandMode
-        }
         CommandKind::WriteQuit => {
-            match app.save_current_session_merging_external() {
-                Ok(_) => {
-                    if app.session.has_comments() {
-                        if app.output_to_stdout {
-                            // Skip confirmation dialog, export directly.
-                            handle_export(app);
-                        } else {
-                            app.exit_command_mode();
-                            app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
-                            return CommandAfterDispatch::KeepMode;
-                        }
-                    } else {
-                        app.should_quit = true;
-                    }
+            if app.session.has_comments() {
+                if app.output_to_stdout {
+                    // Skip confirmation dialog, export directly.
+                    handle_export(app);
+                } else {
+                    app.exit_command_mode();
+                    app.enter_confirm_mode(app::ConfirmAction::CopyAndQuit);
+                    return CommandAfterDispatch::KeepMode;
                 }
-                Err(e) => app.set_error(format!("Save failed: {e}")),
+            } else {
+                app.should_quit = true;
             }
             CommandAfterDispatch::ExitCommandMode
         }
@@ -872,10 +794,6 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::Export => {
             handle_export(app);
-            CommandAfterDispatch::ExitCommandMode
-        }
-        CommandKind::CopyUrl => {
-            handle_copy_pr_url(app);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Clear(scope) => {
@@ -957,73 +875,28 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.stage_reviewed_files();
             CommandAfterDispatch::ExitCommandMode
         }
-        CommandKind::Targets(tab) => {
-            let result = app.enter_target_selector(tab);
-            match (tab, result) {
-                (_, Ok(())) => CommandAfterDispatch::KeepMode,
-                (TargetTab::Local, Err(e)) => {
-                    app.set_error(format!("Failed to load commits: {e}"));
-                    CommandAfterDispatch::ExitCommandMode
-                }
-                (TargetTab::PullRequests, Err(e)) => {
-                    app.set_error(format!("Failed to open PR selector: {e}"));
-                    CommandAfterDispatch::ExitCommandMode
-                }
-                (TargetTab::Sessions, Err(e)) => {
-                    app.set_error(format!("Failed to open session selector: {e}"));
-                    CommandAfterDispatch::ExitCommandMode
-                }
+        CommandKind::Targets(tab) => match app.enter_target_selector(tab) {
+            Ok(()) => CommandAfterDispatch::KeepMode,
+            Err(e) => {
+                app.set_error(format!("Failed to load commits: {e}"));
+                CommandAfterDispatch::ExitCommandMode
             }
-        }
-        CommandKind::SubmitPicker => {
-            app.exit_command_mode();
-            app.start_submit_action_picker();
-            CommandAfterDispatch::KeepMode
-        }
-        CommandKind::Submit(event) => {
-            app.exit_command_mode();
-            app.start_submit(event);
-            CommandAfterDispatch::KeepMode
-        }
-        CommandKind::Comments(visibility) => {
-            set_remote_comments_visibility(app, visibility);
-            CommandAfterDispatch::ExitCommandMode
-        }
+        },
     }
 }
 
 fn reload_review(app: &mut App) {
-    let comment_reload = app.reload_persisted_session_if_changed(true);
-    if matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
-        if let Err(e) = comment_reload {
-            app.set_warning(format!("Comment reload failed: {e}"));
-        }
-        // Async: shows a spinner in the status bar; result is applied in
-        // `poll_pr_reload_events` and the cursor is restored to the captured
-        // anchor.
-        if let Err(e) = app.spawn_pr_reload() {
-            app.set_error(format!("Reload failed: {e}"));
-        }
-    } else {
-        match app.reload_diff_files() {
-            Ok((count, invalidated)) => {
-                let comment_suffix = match comment_reload {
-                    Ok(added) if added > 0 => {
-                        format!(", loaded {added} external comments")
-                    }
-                    Ok(_) => String::new(),
-                    Err(e) => format!(", comment reload failed: {e}"),
-                };
-                if invalidated > 0 {
-                    app.set_message(format!(
-                        "Reloaded {count} files, {invalidated} changed since last review{comment_suffix}"
-                    ));
-                } else {
-                    app.set_message(format!("Reloaded {count} files{comment_suffix}"));
-                }
+    match app.reload_diff_files() {
+        Ok((count, invalidated)) => {
+            if invalidated > 0 {
+                app.set_message(format!(
+                    "Reloaded {count} files, {invalidated} changed since last review"
+                ));
+            } else {
+                app.set_message(format!("Reloaded {count} files"));
             }
-            Err(e) => app.set_error(format!("Reload failed: {e}")),
         }
+        Err(e) => app.set_error(format!("Reload failed: {e}")),
     }
 }
 
@@ -1034,21 +907,6 @@ fn set_commit_selector_visible(app: &mut App, visible: bool) {
     }
     let status = if visible { "visible" } else { "hidden" };
     app.set_message(format!("Commit selector: {status}"));
-}
-
-fn set_remote_comments_visibility(app: &mut App, visibility: PrCommentsVisibility) {
-    if !matches!(app.diff_source, app::DiffSource::PullRequest(_)) {
-        app.set_warning(":comments only applies in PR mode");
-        return;
-    }
-
-    let changed = app.set_remote_comments_visibility(visibility);
-    let label = visibility.label();
-    if changed {
-        app.set_message(format!("Remote comments: {label}"));
-    } else {
-        app.set_message(format!("Remote comments: already {label}"));
-    }
 }
 
 fn complete_command(app: &mut App, direction: CompletionDirection) {
@@ -1179,15 +1037,12 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
-                let slug = app.session_slug();
                 if app.output_to_stdout {
                     match generate_export_content(
                         &app.session,
                         &app.diff_source,
                         &app.comment_types,
                         &app.export,
-                        &app.forge_review_threads,
-                        slug.as_deref(),
                     ) {
                         Ok(content) => app.pending_stdout_output = Some(content),
                         Err(e) => app.set_warning(format!("{e}")),
@@ -1198,8 +1053,6 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                         &app.diff_source,
                         &app.comment_types,
                         &app.export,
-                        &app.forge_review_threads,
-                        slug.as_deref(),
                     ) {
                         Ok(msg) => app.set_message(msg),
                         Err(e) => app.set_warning(format!("{e}")),
@@ -1224,27 +1077,10 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
 /// tabs (Local and Pull Requests). Tab-shared actions (switch tab, quit) are
 /// handled first; per-tab dispatch follows.
 pub fn handle_commit_select_action(app: &mut App, action: Action) {
-    // Filter-editing sub-state on the PR tab. Routed before tab dispatch
-    // because typed characters must go to the filter buffer rather than
-    // to local-commit movement.
-    if app.pr_filter_editing() {
-        handle_pr_filter_action(app, action);
-        return;
-    }
-
     match action {
-        Action::TargetSelectorTabNext => app.cycle_target_tab(true),
-        Action::TargetSelectorTabPrev => app.cycle_target_tab(false),
         Action::EnterCommandMode => app.enter_command_mode(),
         Action::Quit => app.should_quit = true,
         Action::ExitMode => {
-            // Esc during an in-flight PR open aborts the load and stays
-            // in the selector. Takes precedence over the
-            // commit-selection-range exit so the user isn't stuck staring
-            // at a spinner.
-            if app.cancel_pr_open() {
-                return;
-            }
             if app.commit_selection_range.is_none() {
                 return;
             }
@@ -1252,26 +1088,7 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to reload changes: {e}"));
             }
         }
-        other => match app.target_tab {
-            TargetTab::Local => handle_local_target_action(app, other),
-            TargetTab::PullRequests => handle_pr_target_action(app, other),
-            TargetTab::Sessions => handle_sessions_target_action(app, other),
-        },
-    }
-}
-
-fn handle_sessions_target_action(app: &mut App, action: Action) {
-    match action {
-        Action::CommitSelectUp => app.sessions_tab_cursor_up(),
-        Action::CommitSelectDown => app.sessions_tab_cursor_down(),
-        Action::ConfirmCommitSelect => {
-            if let Err(e) = app.sessions_tab_select() {
-                app.set_error(format!("Failed to open session: {e}"));
-            }
-        }
-        // Space is a no-op: sessions are picked, not multi-selected.
-        Action::ToggleCommitSelect => {}
-        _ => {}
+        other => handle_local_target_action(app, other),
     }
 }
 
@@ -1304,47 +1121,6 @@ fn handle_local_target_action(app: &mut App, action: Action) {
     }
 }
 
-fn handle_pr_target_action(app: &mut App, action: Action) {
-    match action {
-        Action::CommitSelectUp => app.pr_tab_cursor_up(),
-        Action::CommitSelectDown => app.pr_tab_cursor_down(),
-        Action::ConfirmCommitSelect => {
-            app.pr_tab_select();
-        }
-        Action::ToggleCommitSelect => {
-            // Space is a no-op on the PR tab (spec).
-        }
-        Action::BeginTargetFilter => {
-            app.begin_pr_filter();
-        }
-        Action::TogglePrReviewRequestedFilter => {
-            app.toggle_pr_review_requested_filter();
-        }
-        _ => {}
-    }
-}
-
-fn handle_pr_filter_action(app: &mut App, action: Action) {
-    match action {
-        Action::InsertChar(c) => app.pr_filter_insert_char(c),
-        Action::Paste(text) => {
-            for ch in text.chars().filter(|c| !matches!(*c, '\n' | '\r')) {
-                app.pr_filter_insert_char(ch);
-            }
-        }
-        Action::DeleteChar => app.pr_filter_delete_char(),
-        Action::DeleteWord => {
-            // Soft word-delete: collapses to clear-line for the v1 cut.
-            app.pr_filter_clear();
-        }
-        Action::ClearLine => app.pr_filter_clear(),
-        Action::SubmitInput => app.commit_pr_filter(),
-        Action::ExitMode => app.cancel_pr_filter(),
-        Action::Quit => app.should_quit = true,
-        _ => {}
-    }
-}
-
 /// Handle actions when inline commit selector panel is focused
 pub fn handle_commit_selector_action(app: &mut App, action: Action) {
     match action {
@@ -1368,9 +1144,6 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
         // Toggle + auto-advance so repeated presses sweep a contiguous run.
         Action::ToggleExpand | Action::ToggleCommitSelect | Action::SelectFile => {
             app.toggle_commit_selection_and_advance();
-            // PR mode reloads via the forge `compare` API on a background
-            // thread (persisting the new range so it survives a restart);
-            // local reviews reload from the VCS.
             if let Err(e) = app.reload_inline_selection_for_source() {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
@@ -1481,7 +1254,7 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
 }
 
 /// Handle input while a file-tree prompt (`i` include, `e` exclude, `/`
-/// search) is open. Mirrors `handle_pr_filter_action` for the target selector.
+/// search) is open.
 fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
     match action {
         Action::InsertChar(c) => app.file_tree_prompt_insert_char(c),
@@ -1528,17 +1301,9 @@ pub fn handle_comment_navigator_action(app: &mut App, action: Action) {
 /// right message when the comment is read-only or absent.
 fn edit_comment_at_cursor(app: &mut App, cursor_at_end: bool) {
     if app.cursor_on_locked_comment() {
-        let forge = app.forge_display_name();
-        app.set_message(format!(
-            "Comment already pushed to {forge} — read only in tuicr"
-        ));
+        app.set_message("Comment is locked — read only in tuicr");
     } else if !app.enter_edit_mode(cursor_at_end) {
-        if app.cursor_on_remote_thread() {
-            let forge = app.forge_display_name();
-            app.set_message(format!("{forge} comment — read only in tuicr"));
-        } else {
-            app.set_message("No comment at cursor");
-        }
+        app.set_message("No comment at cursor");
     }
 }
 
@@ -1612,9 +1377,9 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_sticky_warning("Unsaved changes. Press q again to quit.");
                 app.quit_warned = true;
             } else if app.dirty && !app.session.has_comments() {
-                // Dirty from reviewed-file markers only: discard the state and
-                // quit instead of warning about unsaved changes.
-                app.discard_session_and_quit();
+                // Dirty from reviewed-file markers only: quit instead of
+                // warning about unsaved changes.
+                app.should_quit = true;
             } else {
                 app.should_quit = true;
             }
@@ -1753,56 +1518,6 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
     }
 }
 
-/// Handle actions in the submit resolver modal: pick what to do with each
-/// comment that did not map to an inline GitHub review comment.
-pub fn handle_submit_resolver_action(app: &mut App, action: Action) {
-    match action {
-        Action::SubmitResolverDown => app.submit_resolver_cursor_down(),
-        Action::SubmitResolverUp => app.submit_resolver_cursor_up(),
-        Action::SubmitResolverToggle => app.submit_resolver_toggle(),
-        Action::SubmitResolverAdvance => app.submit_resolver_advance(),
-        Action::ExitMode => app.cancel_submit(),
-        Action::Quit => app.should_quit = true,
-        _ => {}
-    }
-}
-
-/// Handle actions in the bare-`:submit` action picker. Up/down move the
-/// cursor through Comment/Approve/Request changes/Draft; Enter dispatches
-/// preflight with the picked event (skipping the confirmation modal); Esc
-/// cancels back to normal.
-pub fn handle_submit_action_picker_action(app: &mut App, action: Action) {
-    match action {
-        Action::SubmitPickerDown => app.submit_picker_cursor_down(),
-        Action::SubmitPickerUp => app.submit_picker_cursor_up(),
-        Action::SubmitPickerConfirm => app.submit_picker_confirm(),
-        Action::ExitMode => app.cancel_submit_action_picker(),
-        Action::Quit => app.should_quit = true,
-        Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
-        _ => {}
-    }
-}
-
-/// Handle actions in the final submit confirmation modal.
-pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
-    match action {
-        Action::ConfirmYes => app.confirm_submit(),
-        Action::ConfirmNo => app.cancel_submit(),
-        // Only meaningful when the stale-head warning is visible.
-        Action::SubmitReloadPr
-            if app.submit_head_is_stale()
-                && matches!(app.diff_source, app::DiffSource::PullRequest(_)) =>
-        {
-            app.cancel_submit();
-            if let Err(e) = app.spawn_pr_reload() {
-                app.set_error(format!("Reload failed: {e}"));
-            }
-        }
-        Action::Quit => app.should_quit = true,
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod command_tests {
     use super::{CommandKind, command_spec_for};
@@ -1820,14 +1535,6 @@ mod command_tests {
         assert_eq!(
             command_spec_for("set relativenumber!").map(|spec| spec.kind),
             Some(CommandKind::ToggleRelativeLineNumbers)
-        );
-    }
-
-    #[test]
-    fn parses_copy_url_command() {
-        assert_eq!(
-            command_spec_for("copy-url").map(|spec| spec.kind),
-            Some(CommandKind::CopyUrl)
         );
     }
 

@@ -66,7 +66,6 @@ fn build_app() -> App {
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("failed to build test app")
 }

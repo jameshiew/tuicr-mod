@@ -18,25 +18,11 @@ enum SummaryAnnotationTarget {
 
 impl App {
     /// Whether the `═══ Review Comments ═══` section has anything to show:
-    /// a remote review summary, a local review-level comment, or a visible
-    /// review-level (line: None) remote thread. Mirrors exactly what the
-    /// section renders, so the header gate stays in sync between the renderer
-    /// and the annotation model.
+    /// a local review-level comment. Mirrors exactly what the section
+    /// renders, so the header gate stays in sync between the renderer and
+    /// the annotation model.
     pub fn has_review_section_content(&self) -> bool {
-        if !self.forge_review_summaries.is_empty() || !self.session.review_comments.is_empty() {
-            return true;
-        }
-        let visibility = self.session.remote_comments_visibility;
-        if matches!(
-            visibility,
-            crate::forge::remote_comments::PrCommentsVisibility::Hide
-        ) {
-            return false;
-        }
-        self.forge_review_threads
-            .iter()
-            .filter(|thread| thread.line.is_none())
-            .any(|thread| visibility.render_decision(thread).is_some())
+        !self.session.review_comments.is_empty()
     }
 
     /// Whether the `═══ Review Comments ═══` section header should render.
@@ -79,14 +65,6 @@ impl App {
                 side: *side,
                 comment_idx: *comment_idx,
             }),
-            AnnotatedLine::RemoteThreadLine { thread_idx } => Some(CommentNavigatorKey::Remote {
-                thread_idx: *thread_idx,
-            }),
-            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
-                Some(CommentNavigatorKey::RemoteReview {
-                    summary_idx: *summary_idx,
-                })
-            }
             _ => None,
         }
     }
@@ -152,39 +130,6 @@ impl App {
                     line: Some(line),
                     side: Some(side),
                     author: Some(comment.author.clone()),
-                })
-            }
-            CommentNavigatorKey::Remote { thread_idx } => {
-                let thread = self.forge_review_threads.get(thread_idx)?;
-                let muted = self
-                    .session
-                    .remote_comments_visibility
-                    .render_decision(thread)?;
-                let side = match thread.side {
-                    crate::forge::remote_comments::RemoteCommentSide::Right => LineSide::New,
-                    crate::forge::remote_comments::RemoteCommentSide::Left => LineSide::Old,
-                };
-                let author = thread.root().and_then(|c| c.author.clone());
-                Some(CommentNavigatorItem {
-                    key: CommentNavigatorKey::Remote { thread_idx },
-                    kind: CommentNavigatorKind::Remote { muted },
-                    target_annotation,
-                    path: Some(thread.path.clone()),
-                    line: thread.line,
-                    side: Some(side),
-                    author,
-                })
-            }
-            CommentNavigatorKey::RemoteReview { summary_idx } => {
-                let summary = self.forge_review_summaries.get(summary_idx)?;
-                Some(CommentNavigatorItem {
-                    key: CommentNavigatorKey::RemoteReview { summary_idx },
-                    kind: CommentNavigatorKind::Remote { muted: false },
-                    target_annotation,
-                    path: None,
-                    line: None,
-                    side: None,
-                    author: summary.author.clone(),
                 })
             }
         }
@@ -563,18 +508,6 @@ impl App {
                 })
                 .is_some_and(|c| c.is_locked()),
         }
-    }
-
-    /// Find the comment at the current cursor position
-    /// True when the cursor is on a row that belongs to a fetched-from-GitHub
-    /// review thread. Remote threads are read-only in v1; surfaced as a
-    /// distinct condition so the handler can produce a clearer message than
-    /// the generic "no comment at cursor".
-    pub fn cursor_on_remote_thread(&self) -> bool {
-        matches!(
-            self.line_annotations.get(self.diff_state.cursor_line),
-            Some(AnnotatedLine::RemoteThreadLine { .. })
-        )
     }
 
     fn find_comment_at_cursor(&self) -> Option<CommentLocation> {
@@ -966,7 +899,6 @@ impl App {
         let content = self.comment_buffer.trim().to_string();
 
         let mut message = "Error: Could not save comment".to_string();
-        let mut autosave_error = None;
 
         // Check if we're editing an existing comment
         if let Some(editing_id) = &self.editing_comment_id {
@@ -1065,15 +997,8 @@ impl App {
 
         if !message.starts_with("Error:") {
             self.dirty = true;
-            if let Err(e) = self.save_current_session_merging_external() {
-                autosave_error = Some(format!("{message}; autosave failed: {e}"));
-            }
         }
-        if let Some(error) = autosave_error {
-            self.set_error(error);
-        } else {
-            self.set_message(message);
-        }
+        self.set_message(message);
         self.rebuild_annotations();
 
         self.exit_comment_mode();

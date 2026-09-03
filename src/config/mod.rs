@@ -17,27 +17,9 @@ pub struct CommentTypeConfig {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct ForgeConfig {
-    /// Prepend `[TYPE] ` to inline review comment bodies on submit so the
-    /// reader can see the comment classification at a glance. Defaults to
-    /// `true`; set to `false` to send the raw comment body.
-    pub comment_type_prefix: bool,
-}
-
-impl Default for ForgeConfig {
-    fn default() -> Self {
-        Self {
-            comment_type_prefix: true,
-        }
-    }
-}
-
 const DEFAULT_EXPORT_INTRO: &str =
     "I reviewed your code and have the following comments. Please address them.";
 const DEFAULT_EXPORT_COMMENTS_HEADER: &str = "## Local tuicr Comments";
-const DEFAULT_EXPORT_REMOTE_COMMENTS_HEADER: &str = "## Existing GitHub Comments";
 
 /// `[export]` section settings shaping the generated review markdown.
 ///
@@ -52,14 +34,8 @@ pub struct ExportConfig {
     pub intro: Option<String>,
     /// Whether to emit the `Reviewing <scope>` line.
     pub scope_line: Option<bool>,
-    /// Whether to emit the `URL:`/`Head:` lines in pull request mode. Kept
-    /// separate from `scope_line` because they carry addressable metadata
-    /// rather than framing, so trimming the preamble need not drop them.
-    pub pr_metadata: Option<bool>,
     /// Heading above locally authored comments. An empty string omits it.
     pub comments_header: Option<String>,
-    /// Heading above unresolved remote threads. An empty string omits it.
-    pub remote_comments_header: Option<String>,
     /// Whether to emit the `Comment types:` legend.
     pub legend: Option<bool>,
 }
@@ -73,20 +49,10 @@ impl ExportConfig {
         self.scope_line.unwrap_or(true)
     }
 
-    pub fn pr_metadata(&self) -> bool {
-        self.pr_metadata.unwrap_or(true)
-    }
-
     pub fn comments_header(&self) -> &str {
         self.comments_header
             .as_deref()
             .unwrap_or(DEFAULT_EXPORT_COMMENTS_HEADER)
-    }
-
-    pub fn remote_comments_header(&self) -> &str {
-        self.remote_comments_header
-            .as_deref()
-            .unwrap_or(DEFAULT_EXPORT_REMOTE_COMMENTS_HEADER)
     }
 
     pub fn legend(&self) -> bool {
@@ -104,12 +70,6 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
-    /// Whether pull-request CI checks are fetched and shown.
-    /// Defaults to false.
-    pub show_pr_checks: Option<bool>,
-    /// Whether pull-request conversation comments are fetched and shown.
-    /// Defaults to true.
-    pub show_pr_comments: Option<bool>,
     /// Whether the inline commit selector pane is visible on startup for
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
@@ -142,9 +102,8 @@ pub struct AppConfig {
     pub leader: Option<char>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
-    pub review_watch_interval_ms: Option<usize>,
     /// Overrides the default local refresh interval. `0` disables it.
-    /// Ignored for pull-request reviews and `--all-files` mode.
+    /// Ignored in `--all-files` mode.
     pub diff_watch_interval_ms: Option<usize>,
     /// Render single-file and pristine views in full-width mode by default.
     /// Pristine `--all-files` mode always enables this regardless of this
@@ -154,9 +113,6 @@ pub struct AppConfig {
     /// used as the "viewer" identity for per-author coloring in the comment
     /// pane. Defaults to `"user"` when unset.
     pub username: Option<String>,
-    /// `[forge]` section settings. Always present; `None` means "no override"
-    /// and downstream code should treat it as `ForgeConfig::default()`.
-    pub forge: Option<ForgeConfig>,
     /// `[export]` section settings. `None` means "no override"; downstream
     /// code should treat it as `ExportConfig::default()`.
     pub export: Option<ExportConfig>,
@@ -187,8 +143,6 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
-    "show_pr_checks",
-    "show_pr_comments",
     "show_commits",
     "show_reviewed",
     "diff_view",
@@ -206,24 +160,13 @@ const KNOWN_KEYS: &[&str] = &[
     "leader",
     "transparent_background",
     "scroll_offset",
-    "review_watch_interval_ms",
     "diff_watch_interval_ms",
     "single_file_view",
     "username",
-    "forge",
     "export",
 ];
 
-const FORGE_KNOWN_KEYS: &[&str] = &["comment_type_prefix"];
-
-const EXPORT_KNOWN_KEYS: &[&str] = &[
-    "intro",
-    "scope_line",
-    "pr_metadata",
-    "comments_header",
-    "remote_comments_header",
-    "legend",
-];
+const EXPORT_KNOWN_KEYS: &[&str] = &["intro", "scope_line", "comments_header", "legend"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigLoadOutcome {
@@ -411,8 +354,6 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
-        show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
-        show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         show_reviewed: read_bool(table, "show_reviewed", &mut warnings),
         diff_view: read_enum(
@@ -445,13 +386,9 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         leader: read_leader(table, &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
-        review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
         diff_watch_interval_ms: read_usize(table, "diff_watch_interval_ms", &mut warnings),
         single_file_view: read_bool(table, "single_file_view", &mut warnings),
         username: read_string(table, "username", &mut warnings),
-        forge: table
-            .get("forge")
-            .and_then(|v| parse_forge(v, &mut warnings)),
         export: table
             .get("export")
             .and_then(|v| parse_export(v, &mut warnings)),
@@ -467,35 +404,6 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         config: Some(config),
         warnings,
     })
-}
-
-/// Parse the `[forge]` section, returning `Some` with overridden values when
-/// any of the recognized keys are set and `None` when the section is empty (so
-/// downstream consumers can fall back to `ForgeConfig::default()`).
-fn parse_forge(value: &Value, warnings: &mut Vec<String>) -> Option<ForgeConfig> {
-    let Some(table) = value.as_table() else {
-        warnings.push("Warning: Config key 'forge' must be a table; ignoring value".to_string());
-        return None;
-    };
-
-    for key in table.keys() {
-        if !FORGE_KNOWN_KEYS.contains(&key.as_str()) {
-            warnings.push(format!(
-                "Warning: Unknown config key 'forge.{key}', ignoring"
-            ));
-        }
-    }
-
-    let defaults = ForgeConfig::default();
-    let mut cfg = defaults.clone();
-    let mut any_override = false;
-
-    if let Some(v) = read_section_bool(table, "forge", "comment_type_prefix", warnings) {
-        cfg.comment_type_prefix = v;
-        any_override = true;
-    }
-
-    if any_override { Some(cfg) } else { None }
 }
 
 /// Parse the `[export]` section. Returns `Some` only when at least one
@@ -518,14 +426,7 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
     let cfg = ExportConfig {
         intro: read_section_string(table, "export", "intro", warnings),
         scope_line: read_section_bool(table, "export", "scope_line", warnings),
-        pr_metadata: read_section_bool(table, "export", "pr_metadata", warnings),
         comments_header: read_section_string(table, "export", "comments_header", warnings),
-        remote_comments_header: read_section_string(
-            table,
-            "export",
-            "remote_comments_header",
-            warnings,
-        ),
         legend: read_section_bool(table, "export", "legend", warnings),
     };
 
@@ -918,56 +819,6 @@ mod tests {
         assert_eq!(outcome.warnings.len(), 1);
     }
 
-    // show_pr_checks
-
-    #[test]
-    fn should_parse_show_pr_checks_false() {
-        let outcome = parse_config("show_pr_checks = false\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_checks),
-            Some(false)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_warn_and_ignore_show_pr_checks_with_invalid_type() {
-        let outcome = parse_config("show_pr_checks = \"no\"\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_checks),
-            None
-        );
-        assert_eq!(
-            outcome.warnings,
-            vec!["Warning: Config key 'show_pr_checks' must be a boolean; ignoring value"]
-        );
-    }
-
-    // show_pr_comments
-
-    #[test]
-    fn should_parse_show_pr_comments_false() {
-        let outcome = parse_config("show_pr_comments = false\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
-            Some(false)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_warn_and_ignore_show_pr_comments_with_invalid_type() {
-        let outcome = parse_config("show_pr_comments = \"no\"\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.show_pr_comments),
-            None
-        );
-        assert_eq!(
-            outcome.warnings,
-            vec!["Warning: Config key 'show_pr_comments' must be a boolean; ignoring value"]
-        );
-    }
-
     // show_commits
 
     #[test]
@@ -1215,51 +1066,6 @@ mod tests {
         );
     }
 
-    // review_watch_interval_ms
-
-    #[test]
-    fn should_parse_review_watch_interval_ms() {
-        let outcome = parse_config("review_watch_interval_ms = 250\n");
-        assert_eq!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.review_watch_interval_ms),
-            Some(250)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_parse_zero_review_watch_interval_ms_to_allow_disable() {
-        let outcome = parse_config("review_watch_interval_ms = 0\n");
-        assert_eq!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.review_watch_interval_ms),
-            Some(0)
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_warn_and_ignore_negative_review_watch_interval_ms() {
-        let outcome = parse_config("review_watch_interval_ms = -1\n");
-        assert_eq!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.review_watch_interval_ms),
-            None
-        );
-        assert_eq!(outcome.warnings.len(), 1);
-        assert_eq!(
-            outcome.warnings[0],
-            "Warning: Config key 'review_watch_interval_ms' must be a non-negative integer; ignoring value"
-        );
-    }
-
     // diff_watch_interval_ms
 
     #[test]
@@ -1472,113 +1278,6 @@ mod tests {
         assert_eq!(outcome.warnings.len(), 3);
     }
 
-    // forge
-
-    #[test]
-    fn should_default_forge_to_none_when_section_missing() {
-        let outcome = parse_config("");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.forge.clone()),
-            None
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_parse_forge_section_overriding_defaults() {
-        let outcome = parse_config(
-            r#"[forge]
-comment_type_prefix = false
-"#,
-        );
-        let forge = outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.forge.clone())
-            .expect("forge section should parse");
-        assert!(!forge.comment_type_prefix);
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_default_forge_to_none_when_section_is_empty_table() {
-        // An empty `[forge]` block does not override anything; downstream
-        // consumers fall back to defaults.
-        let outcome = parse_config("[forge]\n");
-        assert_eq!(
-            outcome.config.as_ref().and_then(|cfg| cfg.forge.clone()),
-            None
-        );
-        assert!(outcome.warnings.is_empty());
-    }
-
-    #[test]
-    fn should_warn_on_unknown_forge_keys() {
-        let outcome = parse_config(
-            r#"[forge]
-comment_type_prefix = false
-foo = "bar"
-"#,
-        );
-        let forge = outcome
-            .config
-            .as_ref()
-            .and_then(|cfg| cfg.forge.clone())
-            .expect("forge section should parse");
-        assert!(!forge.comment_type_prefix);
-        assert_eq!(outcome.warnings.len(), 1);
-        assert_eq!(
-            outcome.warnings[0],
-            "Warning: Unknown config key 'forge.foo', ignoring"
-        );
-    }
-
-    #[test]
-    fn should_warn_and_ignore_forge_value_with_wrong_type() {
-        let outcome = parse_config(
-            r#"[forge]
-comment_type_prefix = "yes"
-"#,
-        );
-        // Wrong-type fields fall back to defaults; with no other overrides
-        // the section is `None`.
-        assert!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.forge.clone())
-                .is_none()
-        );
-        assert_eq!(outcome.warnings.len(), 1);
-        assert!(
-            outcome.warnings[0].contains("forge.comment_type_prefix"),
-            "warning should be qualified, got {:?}",
-            outcome.warnings[0]
-        );
-    }
-
-    #[test]
-    fn should_warn_when_forge_is_not_a_table() {
-        let outcome = parse_config("forge = true\n");
-        assert!(
-            outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.forge.clone())
-                .is_none()
-        );
-        assert_eq!(
-            outcome.warnings,
-            vec!["Warning: Config key 'forge' must be a table; ignoring value".to_string()]
-        );
-    }
-
-    #[test]
-    fn forge_defaults_enable_comment_type_prefix() {
-        let cfg = ForgeConfig::default();
-        assert!(cfg.comment_type_prefix);
-    }
-
     #[test]
     fn should_warn_and_ignore_invalid_comment_type_color() {
         let outcome = parse_config(
@@ -1610,9 +1309,7 @@ comment_type_prefix = "yes"
             "I reviewed your code and have the following comments. Please address them."
         );
         assert!(cfg.scope_line());
-        assert!(cfg.pr_metadata());
         assert_eq!(cfg.comments_header(), "## Local tuicr Comments");
-        assert_eq!(cfg.remote_comments_header(), "## Existing GitHub Comments");
         assert!(cfg.legend());
     }
 
@@ -1643,9 +1340,7 @@ comment_type_prefix = "yes"
             r###"[export]
 intro = "Code review comments:"
 scope_line = false
-pr_metadata = false
 comments_header = "## Comments"
-remote_comments_header = "## Upstream"
 legend = false
 "###,
         );
@@ -1656,9 +1351,7 @@ legend = false
             .expect("export section should parse");
         assert_eq!(export.intro(), "Code review comments:");
         assert!(!export.scope_line());
-        assert!(!export.pr_metadata());
         assert_eq!(export.comments_header(), "## Comments");
-        assert_eq!(export.remote_comments_header(), "## Upstream");
         assert!(!export.legend());
         assert!(outcome.warnings.is_empty());
     }
@@ -1779,7 +1472,6 @@ scope_line = "no"
         let export = cfg.resolved_export();
         assert!(export.legend());
         assert!(export.scope_line());
-        assert!(export.pr_metadata());
     }
 
     #[test]

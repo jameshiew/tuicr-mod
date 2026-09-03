@@ -26,75 +26,6 @@ impl App {
         })
     }
 
-    pub(in crate::app) fn apply_pr_commit_selector(
-        &mut self,
-        commits: Vec<crate::forge::traits::PullRequestCommit>,
-        review_metadata: crate::forge::traits::PullRequestReviewMetadata,
-    ) -> Option<String> {
-        self.pr_last_reviewed_commit_index = None;
-        if commits.len() <= 1 {
-            return None;
-        }
-
-        let since_last_review = commits_since_last_review_selection(&commits, &review_metadata);
-        self.set_pr_last_reviewed_commit_from_metadata(&commits, &review_metadata);
-
-        self.pr_commits = commits.clone();
-        let mapped: Vec<CommitInfo> = commits.iter().map(pr_commit_to_commit_info).collect();
-        self.range_diff_files = Some(self.diff_files.clone());
-        self.commit_list = mapped.clone();
-        self.commit_list_cursor = 0;
-        self.commit_list_scroll_offset = 0;
-        self.visible_commit_count = mapped.len();
-        self.has_more_commit = false;
-        self.show_commit_selector = true;
-
-        let mut range = (0, mapped.len() - 1);
-        let mut auto_scoped_since_last_review = false;
-        let mut since_last_review_message = None;
-        // Restore any persisted range scoped to this head SHA. If the
-        // restored range exceeds the current commit count (e.g., the PR
-        // was rebased), fall back to "all". A valid persisted range wins over
-        // both the `initial_commit_selection = oldest` opt-in and the
-        // since-last-review auto-scoping; `oldest` in turn takes precedence
-        // over since-last-review.
-        if let Some(persisted) = self.session.commit_selection_range
-            && persisted.1 < mapped.len()
-            && persisted.0 <= persisted.1
-        {
-            range = persisted;
-        } else if self.commit_selection_start == CommitSelectionStart::Oldest {
-            if let Some(oldest) =
-                Self::initial_commit_range(CommitSelectionStart::Oldest, mapped.len())
-            {
-                range = oldest;
-            }
-        } else if self.session.commit_selection_range.is_none()
-            && let Some(selection) = since_last_review.as_ref()
-        {
-            if let Some(selected_range) = selection.range {
-                range = selected_range;
-                auto_scoped_since_last_review = true;
-            }
-            since_last_review_message = Some(selection.message.clone());
-        }
-
-        self.commit_selection_range = Some(range);
-        self.review_commits = mapped;
-
-        if let Some(message) = since_last_review_message {
-            if auto_scoped_since_last_review
-                && Self::is_strict_commit_selection(Some(range), self.pr_commits.len())
-            {
-                self.focused_panel = FocusedPanel::CommitSelector;
-                self.commit_list_cursor = self.pr_commits.len().saturating_sub(1);
-                self.commit_list_scroll_offset = self.commit_list_cursor.saturating_sub(5);
-            }
-            return Some(message);
-        }
-        None
-    }
-
     pub fn commit_list_idx_at_screen_row(&self, screen_row: u16) -> Option<usize> {
         let inner = self.commit_list_inner_area?;
         if screen_row < inner.y || screen_row >= inner.y + inner.height {
@@ -159,11 +90,8 @@ impl App {
         }
     }
 
-    /// Open the review target selector on a specific tab.
-    ///
-    /// `Local` loads the recent-commits list (same as the historical commit
-    /// selector). `PullRequests` switches the tab; the actual fetch is
-    /// triggered lazily through `on_target_tab_entered`.
+    /// Open the review target selector (the recent-commits / staged /
+    /// unstaged picker).
     pub fn enter_target_selector(&mut self, initial_tab: TargetTab) -> Result<()> {
         let reviewed_target_id = match &self.diff_source {
             DiffSource::Staged => Some(STAGED_SELECTION_ID.to_string()),
@@ -192,10 +120,7 @@ impl App {
 
         let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
-        // Allow opening the selector on the Pull Requests or Sessions tab even
-        // when there are no local commits or changes — that tab is the user's
-        // reason for being here.
-        if no_local_targets && initial_tab == TargetTab::Local {
+        if no_local_targets {
             self.set_message("No commits or staged/unstaged changes found");
             return Ok(());
         }
@@ -216,23 +141,7 @@ impl App {
         self.commit_selection_range = None;
         self.visible_commit_count = self.commit_list.len();
         self.input_mode = InputMode::CommitSelect;
-
-        // Reset the PR tab to Idle each time the selector is opened so the
-        // fetch happens lazily on first visit.
-        self.pr_tab = PullRequestsTab::new(self.forge_repository.clone());
-        self.pr_filter_draft = None;
-        self.pr_load_rx = None;
-
-        // Reset the Sessions tab too, so a resumed review's own session shows
-        // up in the listing rather than a stale snapshot.
-        self.sessions_tab = crate::app::sessions_tab::SessionsTab::default();
-
         self.target_tab = initial_tab;
-        match initial_tab {
-            TargetTab::PullRequests => self.on_target_tab_entered(),
-            TargetTab::Sessions => self.load_sessions_tab(),
-            TargetTab::Local => {}
-        }
         Ok(())
     }
 
@@ -289,43 +198,6 @@ impl App {
         Ok(())
     }
 
-    /// Switch to the next/previous tab in the review target selector.
-    /// Triggers the lazy PR fetch the first time the PR tab is entered, and
-    /// lists persisted sessions on entry to the Sessions tab.
-    pub fn cycle_target_tab(&mut self, forward: bool) {
-        let next = match (self.target_tab, forward) {
-            (TargetTab::Local, true) => TargetTab::PullRequests,
-            (TargetTab::PullRequests, true) => TargetTab::Sessions,
-            (TargetTab::Sessions, true) => TargetTab::Local,
-            (TargetTab::Local, false) => TargetTab::Sessions,
-            (TargetTab::Sessions, false) => TargetTab::PullRequests,
-            (TargetTab::PullRequests, false) => TargetTab::Local,
-        };
-        self.target_tab = next;
-        match next {
-            TargetTab::PullRequests => self.on_target_tab_entered(),
-            TargetTab::Sessions => {
-                // Leaving the PR tab: drop any half-typed filter draft.
-                self.pr_filter_draft = None;
-                self.load_sessions_tab();
-            }
-            TargetTab::Local => {
-                // Returning to Local: clear any half-typed PR filter draft.
-                self.pr_filter_draft = None;
-            }
-        }
-    }
-
-    /// Entry-point hook called when the PR tab becomes visible.
-    /// Triggers the first network call lazily.
-    fn on_target_tab_entered(&mut self) {
-        if let Some((repo, scope)) = self.pr_tab.start_initial_load() {
-            let override_repo = self.repo_url_override.clone();
-            let skip_resolution = self.canonical_resolved;
-            self.spawn_pr_initial_load(repo, override_repo, skip_resolution, scope);
-        }
-    }
-
     /// Resolve a session's stored commit ids to [`CommitInfo`] rows in the
     /// same order, which the range loaders require to be oldest-first.
     ///
@@ -341,194 +213,6 @@ impl App {
     /// commits are still addressable. `None` means at least one id no longer
     /// resolves — amended or rebased since the session was written — which the
     /// caller reports rather than loading a partial range.
-    fn resolve_session_commits(&self, ids: &[String]) -> Result<Option<Vec<CommitInfo>>> {
-        let resolved = match self.vcs.get_commits_info(ids) {
-            Ok(resolved) => resolved,
-            // Backends report an unknown id as a command error; that is the
-            // "no longer reachable" case, not a failure to surface.
-            Err(TuicrError::VcsCommand(_)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        if resolved.len() != ids.len() {
-            return Ok(None);
-        }
-        Ok(Some(resolved))
-    }
-
-    /// List persisted sessions for this checkout. Synchronous: this reads the
-    /// review manifest, so there is no network call to defer.
-    ///
-    /// Sessions with neither comments nor reviewed state are hidden because
-    /// they hold no review progress to resume. A clean quit removes them
-    /// (`delete_session_if_empty`); a crash can leave one behind.
-    pub fn load_sessions_tab(&mut self) {
-        let root = self.vcs_info.root_path.clone();
-        let store = crate::review_store::ReviewStore::new();
-        let mut result = store
-            .list_sessions_for_repo(&root)
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter(Self::is_resumable)
-                    .collect::<Vec<_>>()
-            })
-            .map_err(|e| e.to_string());
-
-        // A fork's `origin` coordinate does not match PR sessions saved against
-        // the upstream repo, so listing by checkout alone hides them. Add the
-        // sessions for the forge repository this checkout reviews against: the
-        // canonical parent, or whatever `--repo-url` named.
-        if let (Ok(sessions), Some(forge)) = (&mut result, self.forge_repository.clone()) {
-            let coordinate = format!("{}/{}", forge.owner, forge.name);
-            if let Ok(forge_sessions) = store.list_sessions_for_repo(Path::new(&coordinate)) {
-                for session in forge_sessions {
-                    let listed = sessions
-                        .iter()
-                        .any(|s| s.session_ref.path() == session.session_ref.path());
-                    if !listed && Self::is_resumable(&session) {
-                        sessions.push(session);
-                    }
-                }
-                sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
-            }
-        }
-
-        self.sessions_tab
-            .set_scope(Self::checkout_display_name(&root));
-        self.sessions_tab.apply_load(result);
-    }
-
-    /// Whether a listed session holds review progress worth resuming.
-    pub(in crate::app) fn is_resumable(summary: &crate::review_store::SessionSummary) -> bool {
-        summary.comment_count > 0 || summary.reviewed_count > 0
-    }
-
-    /// `owner/repo` for a checkout, falling back to the directory name when it
-    /// has no origin remote. Resolved once per listing: it reaches git2
-    /// repository discovery, so it must stay out of the render path.
-    fn checkout_display_name(root: &Path) -> String {
-        crate::slug::RepoCoordinate::from_repo_path(root)
-            .map(|coordinate| match coordinate.owner {
-                Some(owner) => format!("{owner}/{}", coordinate.repo),
-                None => coordinate.repo,
-            })
-            .or_else(|| {
-                root.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| root.display().to_string())
-    }
-
-    pub fn sessions_tab_cursor_up(&mut self) {
-        self.sessions_tab.cursor_up();
-        let height = self.sessions_list_viewport_height;
-        self.sessions_tab.ensure_cursor_visible(height);
-    }
-
-    pub fn sessions_tab_cursor_down(&mut self) {
-        self.sessions_tab.cursor_down();
-        let height = self.sessions_list_viewport_height;
-        self.sessions_tab.ensure_cursor_visible(height);
-    }
-
-    /// Open the session under the cursor with its stored `diff_source` and
-    /// `commit_range`, which is what the user would otherwise have to retype as
-    /// `-r` / `-w` flags.
-    pub fn sessions_tab_select(&mut self) -> Result<()> {
-        let Some(summary) = self.sessions_tab.cursor_session() else {
-            return Ok(());
-        };
-
-        let session = match crate::persistence::storage::load_session(summary.session_ref.path()) {
-            Ok(session) => session,
-            Err(e) => {
-                self.set_error(format!("Failed to load session: {e}"));
-                return Ok(());
-            }
-        };
-
-        let loaded = match session.diff_source {
-            SessionDiffSource::CommitRange => {
-                let Some(commits) = self.session_range_commits(&session)? else {
-                    return Ok(());
-                };
-                let ordered_ids = commits.iter().map(|c| c.id.clone()).collect();
-                self.load_commit_range_selection(ordered_ids, commits)
-            }
-            SessionDiffSource::WorkingTree => self.load_working_tree_selection(),
-            SessionDiffSource::Unstaged => self.load_unstaged_selection(),
-            SessionDiffSource::Staged => self.load_staged_selection(),
-            SessionDiffSource::StagedAndUnstaged => self.load_staged_and_unstaged_selection(),
-            SessionDiffSource::WorkingTreeAndCommits
-            | SessionDiffSource::StagedUnstagedAndCommits => {
-                let Some(commits) = self.session_range_commits(&session)? else {
-                    return Ok(());
-                };
-                let ordered_ids = commits.iter().map(|c| c.id.clone()).collect();
-                self.load_staged_unstaged_and_commits_selection(ordered_ids, commits)
-            }
-            SessionDiffSource::Pristine => {
-                self.set_message("Restart tuicr with --all-files to open this review.");
-                return Ok(());
-            }
-            // A PR review is fetched, not read from the checkout. The session
-            // records the forge repository and number, so resume can reuse the
-            // Pull Requests tab's open path instead of sending the user there.
-            SessionDiffSource::PullRequest => {
-                let Some(key) = session.pr_session_key.clone() else {
-                    self.set_error(
-                        "Can't restore this review: it has no saved pull request.".to_string(),
-                    );
-                    return Ok(());
-                };
-                self.resume_pr_session(&key);
-                return Ok(());
-            }
-        };
-        loaded?;
-
-        // The loaders resolve a session from the *current* branch and HEAD, so
-        // they can hand back a different session than the row that was picked
-        // — a range saved on another branch, or an older working-tree session.
-        // Install the selected one and keep its comments and reviewed state.
-        self.install_resumed_session(session);
-        Ok(())
-    }
-
-    /// Commits for a session's stored range, or `None` after reporting why the
-    /// range cannot be restored.
-    fn session_range_commits(
-        &mut self,
-        session: &ReviewSession,
-    ) -> Result<Option<Vec<CommitInfo>>> {
-        let Some(ids) = session.commit_range.clone().filter(|ids| !ids.is_empty()) else {
-            self.set_error("Can't restore this review: it has no saved commit range.".to_string());
-            return Ok(None);
-        };
-        let Some(commits) = self.resolve_session_commits(&ids)? else {
-            self.set_error(
-                "Can't restore this review: one or more saved commits aren't in the current \
-                 history. Switch to the review's branch and try again."
-                    .to_string(),
-            );
-            return Ok(None);
-        };
-        Ok(Some(commits))
-    }
-
-    /// Adopt the session the user selected, carrying over the diff files the
-    /// loader just resolved so reviewed state and comments still line up.
-    fn install_resumed_session(&mut self, session: ReviewSession) {
-        self.session = session;
-        let diff_files = std::mem::take(&mut self.diff_files);
-        for file in &diff_files {
-            self.session.add_diff_file(file);
-        }
-        self.diff_files = diff_files;
-        self.reset_persisted_session_tracking();
-        self.rebuild_annotations();
-    }
-
     /// Whether the inline commit selector panel should be displayed.
     pub fn has_inline_commit_selector(&self) -> bool {
         self.show_commit_selector && self.has_review_commits()
@@ -774,41 +458,6 @@ impl App {
             .map(|c| c.id.clone())
     }
 
-    pub(in crate::app) fn set_pr_last_reviewed_commit_from_metadata(
-        &mut self,
-        commits: &[crate::forge::traits::PullRequestCommit],
-        review_metadata: &crate::forge::traits::PullRequestReviewMetadata,
-    ) {
-        self.pr_last_reviewed_commit_index = if commits.len() > 1 {
-            commits_since_last_review_selection(commits, review_metadata)
-                .map(|selection| selection.reviewed_index)
-        } else {
-            None
-        };
-    }
-
-    pub(in crate::app) fn mark_pr_commits_reviewed_through(&mut self, commit_id: &str) {
-        if !matches!(&self.diff_source, DiffSource::PullRequest(_)) {
-            return;
-        }
-        if let Some(index) = self
-            .pr_commits
-            .iter()
-            .position(|commit| commit.oid == commit_id)
-        {
-            self.pr_last_reviewed_commit_index = Some(index);
-        }
-    }
-
-    /// Check if a PR commit is covered by the viewer's latest submitted review.
-    pub fn is_commit_reviewed_by_viewer(&self, index: usize) -> bool {
-        matches!(&self.diff_source, DiffSource::PullRequest(_))
-            && index < self.review_commits.len()
-            && self
-                .pr_last_reviewed_commit_index
-                .is_some_and(|reviewed_index| index >= reviewed_index)
-    }
-
     /// Cycle inline commit selector to the next individual commit (`)` key).
     /// all → last, i → i+1, last → all
     pub fn cycle_commit_next(&mut self) {
@@ -965,33 +614,15 @@ impl App {
             return Ok(());
         }
 
-        // Update session with the newest commit as base
+        // Fresh session with the newest commit as base
         let newest_commit_id = selected_ids.last().unwrap().clone();
-        let loaded_session = load_latest_session_for_context(
-            &self.vcs_info.root_path,
-            self.vcs_info.branch_name.as_deref(),
-            &newest_commit_id,
+        let mut session = ReviewSession::new(
+            self.vcs_info.root_path.clone(),
+            newest_commit_id,
+            self.vcs_info.branch_name.clone(),
             SessionDiffSource::CommitRange,
-            Some(selected_ids.as_slice()),
-        )
-        .ok()
-        .and_then(|found| found.map(|(_path, session)| session));
-
-        let mut session = loaded_session.unwrap_or_else(|| {
-            let mut session = ReviewSession::new(
-                self.vcs_info.root_path.clone(),
-                newest_commit_id,
-                self.vcs_info.branch_name.clone(),
-                SessionDiffSource::CommitRange,
-            );
-            session.commit_range = Some(selected_ids.clone());
-            session
-        });
-
-        if session.commit_range.is_none() {
-            session.commit_range = Some(selected_ids.clone());
-            session.updated_at = chrono::Utc::now();
-        }
+        );
+        session.commit_range = Some(selected_ids.clone());
 
         self.session = session;
 
@@ -999,7 +630,6 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
 
         // Update app state
         self.diff_files = diff_files;
@@ -1012,8 +642,6 @@ impl App {
         self.file_list_state = FileListState::default();
 
         // Set up inline commit selector for multi-commit reviews (newest-first display order)
-        self.pr_commits.clear();
-        self.pr_last_reviewed_commit_index = None;
         self.review_commits = selected_commits.iter().rev().cloned().collect();
         self.range_diff_files = Some(self.diff_files.clone());
         self.commit_list = self.review_commits.clone();
@@ -1101,8 +729,7 @@ impl App {
         // look a file up here, so a file reachable only through a narrowed
         // commit selection could not be marked reviewed or commented on.
         //
-        // Hunk marks are preserved rather than pruned, for the same reason
-        // `reload_pr_inline_selection` preserves them: a narrowed selection is
+        // Hunk marks are preserved rather than pruned: a narrowed selection is
         // a partial view of a wider review, and hunks it does not show are
         // still reviewed in that wider scope.
         Self::register_diff_files(&mut self.session, &self.diff_files, true);
@@ -1122,20 +749,10 @@ impl App {
         Ok(())
     }
 
-    /// Reload the inline commit subrange diff via the backend appropriate for
-    /// the current review. PR reviews route through the forge `compare` API
-    /// (persisting the narrowed range so it survives a restart); local reviews
-    /// reload straight from the VCS. Callers that adjust the selection (toggle,
-    /// `(`/`)` cycling, restore-on-exit) must go through here so PR reviews
-    /// don't fall into the VCS path — the forge backend has no commit-range
-    /// diff support and would error with "Commit range diff not supported".
+    /// Reload the diff for the currently selected inline commit subrange.
+    /// Callers that adjust the selection (toggle, `(`/`)` cycling,
+    /// restore-on-exit) go through here.
     pub fn reload_inline_selection_for_source(&mut self) -> Result<()> {
-        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
-            self.persist_pr_commit_selection_range();
-            self.reload_pr_inline_selection();
-            Ok(())
-        } else {
-            self.reload_inline_selection()
-        }
+        self.reload_inline_selection()
     }
 }

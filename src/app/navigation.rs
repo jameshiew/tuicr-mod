@@ -1003,28 +1003,8 @@ impl App {
         } else {
             0
         };
-        for summary in &self.forge_review_summaries {
-            height += crate::forge::remote_comments::summary_display_lines(summary);
-        }
         for comment in &self.session.review_comments {
             height += Self::comment_display_lines(comment, self.diff_state.viewport_width);
-        }
-        // Review-level remote threads (line: None) — must mirror the filter
-        // in `rebuild_annotations` or scroll offsets fall out of sync.
-        {
-            use crate::forge::remote_comments::{PrCommentsVisibility, thread_display_lines};
-            let visibility = self.session.remote_comments_visibility;
-            if !matches!(visibility, PrCommentsVisibility::Hide) {
-                for thread in &self.forge_review_threads {
-                    if thread.line.is_some() {
-                        continue;
-                    }
-                    if visibility.render_decision(thread).is_none() {
-                        continue;
-                    }
-                    height += thread_display_lines(thread);
-                }
-            }
         }
         if self.input_mode == InputMode::Comment
             && self.comment_is_review_level
@@ -1037,13 +1017,7 @@ impl App {
     }
 
     pub(in crate::app) fn review_comments_render_height(&self) -> usize {
-        self.issue_comments_start_line()
-            + crate::ui::pr_info_panel::issue_comments_render_height(self)
-    }
-
-    pub(crate) fn issue_comments_start_line(&self) -> usize {
-        crate::ui::pr_info_panel::pr_info_render_height(self)
-            + self.review_comments_section_height()
+        self.review_comments_section_height()
     }
 
     pub(in crate::app) fn file_render_height(&self, file_idx: usize, file: &DiffFile) -> usize {
@@ -1069,32 +1043,6 @@ impl App {
         let spacing_lines = 1; // Trailing blank or "next file" hint
         let mut content_lines = 0;
         let mut comment_lines = 0;
-
-        // Pre-aggregate remote-thread rows by (line, side) for this file. Must
-        // mirror the filter/anchor logic in build_remote_thread_index — the
-        // rebuild_annotations renderer uses the same filter, and the two must
-        // emit identical row counts or scroll math goes out of sync.
-        let remote_thread_rows: HashMap<(u32, LineSide), usize> = {
-            use crate::forge::remote_comments::{RemoteCommentSide, thread_display_lines};
-            let mut map: HashMap<(u32, LineSide), usize> = HashMap::new();
-            let path_str = path.to_string_lossy();
-            let visibility = self.session.remote_comments_visibility;
-            for thread in &self.forge_review_threads {
-                if thread.path != *path_str {
-                    continue;
-                }
-                if visibility.render_decision(thread).is_none() {
-                    continue;
-                }
-                let Some(line) = thread.line else { continue };
-                let side = match thread.side {
-                    RemoteCommentSide::Right => LineSide::New,
-                    RemoteCommentSide::Left => LineSide::Old,
-                };
-                *map.entry((line, side)).or_default() += thread_display_lines(thread);
-            }
-            map
-        };
 
         // Commit-selection filter — must mirror rebuild_annotations and
         // both renderers exactly, or total_lines() disagrees with
@@ -1187,19 +1135,6 @@ impl App {
                                     }
                                 }
                             }
-
-                            if let Some(old_ln) = diff_line.old_lineno {
-                                comment_lines += remote_thread_rows
-                                    .get(&(old_ln, LineSide::Old))
-                                    .copied()
-                                    .unwrap_or(0);
-                            }
-                            if let Some(new_ln) = diff_line.new_lineno {
-                                comment_lines += remote_thread_rows
-                                    .get(&(new_ln, LineSide::New))
-                                    .copied()
-                                    .unwrap_or(0);
-                            }
                         }
                     }
                     DiffViewMode::SideBySide => {
@@ -1232,12 +1167,6 @@ impl App {
                                                 );
                                             }
                                         }
-                                    }
-                                    if let Some(new_ln) = diff_line.new_lineno {
-                                        comment_lines += remote_thread_rows
-                                            .get(&(new_ln, LineSide::New))
-                                            .copied()
-                                            .unwrap_or(0);
                                     }
                                     i += 1;
                                 }
@@ -1310,23 +1239,6 @@ impl App {
                                         }
                                     }
 
-                                    for line in &lines[del_start..del_end] {
-                                        if let Some(old_ln) = line.old_lineno {
-                                            comment_lines += remote_thread_rows
-                                                .get(&(old_ln, LineSide::Old))
-                                                .copied()
-                                                .unwrap_or(0);
-                                        }
-                                    }
-                                    for line in &lines[add_start..add_end] {
-                                        if let Some(new_ln) = line.new_lineno {
-                                            comment_lines += remote_thread_rows
-                                                .get(&(new_ln, LineSide::New))
-                                                .copied()
-                                                .unwrap_or(0);
-                                        }
-                                    }
-
                                     i = add_end;
                                 }
                                 LineOrigin::Addition => {
@@ -1350,12 +1262,6 @@ impl App {
                                                 );
                                             }
                                         }
-                                    }
-                                    if let Some(new_ln) = diff_line.new_lineno {
-                                        comment_lines += remote_thread_rows
-                                            .get(&(new_ln, LineSide::New))
-                                            .copied()
-                                            .unwrap_or(0);
                                     }
 
                                     i += 1;

@@ -99,7 +99,6 @@ fn build_scroll_app(n: usize, viewport: usize, scroll_offset_config: usize) -> A
         InputMode::Normal,
         Vec::new(),
         None,
-        None,
     )
     .expect("failed to build test app");
 

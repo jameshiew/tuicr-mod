@@ -270,7 +270,7 @@ impl App {
         };
 
         let fetch = |start: u32, end: u32| -> Result<Vec<DiffLine>> {
-            let mut lines = self.context_provider().fetch_context_lines(
+            let mut lines = self.fetch_context_lines(
                 old_path.as_ref(),
                 new_path.as_ref(),
                 file_status,
@@ -319,9 +319,8 @@ impl App {
         Ok(())
     }
 
-    /// Resolve the right `ContextProvider` for the current diff source.
-    /// In PR mode (with a forge backend present), expansion goes through the
-    /// forge; otherwise it goes through the local VCS backend.
+    /// The reference commit gap expansion should read file content at, for
+    /// diff sources where that isn't simply the working tree.
     pub(in crate::app) fn ref_commit(&self) -> Option<&str> {
         match &self.diff_source {
             DiffSource::CommitRange(commits) => {
@@ -341,22 +340,24 @@ impl App {
         }
     }
 
-    pub(in crate::app) fn context_provider(&self) -> Box<dyn ContextProvider + '_> {
-        if let (DiffSource::PullRequest(pr), Some(backend)) =
-            (&self.diff_source, self.forge_backend.as_ref())
-        {
-            Box::new(ForgeContextProvider {
-                forge: backend.as_ref(),
-                repository: pr.key.repository.clone(),
-                base_sha: pr.base_sha.clone(),
-                head_sha: pr.key.head_sha.clone(),
-            })
-        } else {
-            Box::new(VcsContextProvider {
-                vcs: self.vcs.as_ref(),
-                ref_commit: self.ref_commit().map(|s| s.to_string()),
-            })
-        }
+    /// Fetch context lines for a file in `[start_line, end_line]` inclusive,
+    /// from the local VCS at the review's reference commit. `old_path` and
+    /// `new_path` come straight from the parsed diff; prefer the new path,
+    /// falling back to the old one (the backend picks the correct side
+    /// internally based on file status).
+    pub(in crate::app) fn fetch_context_lines(
+        &self,
+        old_path: Option<&PathBuf>,
+        new_path: Option<&PathBuf>,
+        file_status: FileStatus,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<DiffLine>> {
+        let Some(path) = new_path.or(old_path) else {
+            return Ok(Vec::new());
+        };
+        self.vcs
+            .fetch_context_lines(path, file_status, self.ref_commit(), start_line, end_line)
     }
 
     /// Collapse an expanded gap
@@ -381,7 +382,6 @@ impl App {
                 | DiffSource::StagedAndUnstaged
                 | DiffSource::StagedUnstagedAndCommits(_)
                 | DiffSource::CommitRange(_)
-                | DiffSource::PullRequest(_)
         )
     }
 

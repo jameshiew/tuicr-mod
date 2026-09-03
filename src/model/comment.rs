@@ -1,9 +1,7 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Which side of the diff a line comment belongs to
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum LineSide {
     /// Comment on a deleted line (keyed by old_lineno)
     Old,
@@ -13,7 +11,7 @@ pub enum LineSide {
 }
 
 /// A range of lines for a comment (inclusive)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineRange {
     pub start: u32,
     pub end: u32,
@@ -53,8 +51,7 @@ impl LineRange {
 /// they have been written to GitHub and edits/deletions in tuicr would diverge
 /// from the remote. PR 5 introduces the field and the lock check; PR 6 wires
 /// the transitions on successful submit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CommentLifecycleState {
     #[default]
     LocalDraft,
@@ -116,26 +113,7 @@ impl CommentType {
     }
 }
 
-impl Serialize for CommentType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.id())
-    }
-}
-
-impl<'de> Deserialize<'de> for CommentType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Ok(Self::from_id(&value))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineContext {
     pub new_line: Option<u32>,
     pub old_line: Option<u32>,
@@ -151,7 +129,7 @@ fn default_author() -> String {
     DEFAULT_AUTHOR.to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comment {
     pub id: String,
     pub content: String,
@@ -159,38 +137,28 @@ pub struct Comment {
     pub created_at: DateTime<Utc>,
     pub line_context: Option<LineContext>,
     /// Which side of the diff this comment belongs to (for line comments)
-    /// None for file-level comments, defaults to New for backward compatibility
-    #[serde(default)]
+    /// None for file-level comments.
     pub side: Option<LineSide>,
-    /// Line range for multi-line comments (for line comments)
-    /// None for file-level comments or single-line comments (backward compatibility)
-    #[serde(default)]
+    /// Line range for multi-line comments (for line comments). None for
+    /// file-level comments or single-line comments.
     pub line_range: Option<LineRange>,
     /// Who wrote this comment. Free-form; agents pass `--username "Claude …"`,
-    /// humans default to `"user"`. Old session JSON predates this field and
-    /// rehydrates as `"user"`.
-    #[serde(default = "default_author")]
+    /// humans default to `"user"`.
     pub author: String,
-    /// Where this comment sits in its remote forge lifecycle. Old session
-    /// JSON predates this field and rehydrates as `LocalDraft`.
-    #[serde(default)]
+    /// Where this comment sits in its remote forge lifecycle.
     pub lifecycle_state: CommentLifecycleState,
     /// Remote review ID this comment belongs to once submitted/pushed.
     /// `None` while still `LocalDraft`.
-    #[serde(default)]
     pub remote_review_id: Option<String>,
     /// Remote review-comment ID once GitHub assigns one. Only meaningful for
     /// inline comments; review-level / summary comments don't get one.
-    #[serde(default)]
     pub remote_comment_id: Option<String>,
     /// The commit SHA this comment was made against, when it was created
     /// while the inline commit selector showed exactly one commit. `None`
-    /// for review-level comments, for comments made against the full
-    /// cumulative diff (all commits selected), and for legacy session JSON
-    /// predating this field. Filtering by the active commit selection hides
-    /// comments whose `commit_id` does not intersect the selection; `None`
-    /// comments are always shown.
-    #[serde(default)]
+    /// for review-level comments and for comments made against the full
+    /// cumulative diff (all commits selected). Filtering by the active
+    /// commit selection hides comments whose `commit_id` does not
+    /// intersect the selection; `None` comments are always shown.
     pub commit_id: Option<String>,
 }
 
@@ -337,40 +305,10 @@ mod tests {
             assert!(range.contains(42));
             assert!(!range.contains(43));
         }
-
-        #[test]
-        fn line_range_serializes_correctly() {
-            let range = LineRange::new(10, 20);
-            let json = serde_json::to_string(&range).unwrap();
-            assert!(json.contains("\"start\":10"));
-            assert!(json.contains("\"end\":20"));
-        }
-
-        #[test]
-        fn line_range_deserializes_correctly() {
-            let json = r#"{"start":10,"end":20}"#;
-            let range: LineRange = serde_json::from_str(json).unwrap();
-            assert_eq!(range.start, 10);
-            assert_eq!(range.end, 20);
-        }
     }
 
     mod comment_tests {
         use super::*;
-
-        #[test]
-        fn comment_type_serializes_custom_type_as_string() {
-            let comment_type = CommentType::from_id("question");
-            let json = serde_json::to_string(&comment_type).unwrap();
-            assert_eq!(json, "\"question\"");
-        }
-
-        #[test]
-        fn comment_type_deserializes_custom_type_from_string() {
-            let json = "\"question\"";
-            let comment_type: CommentType = serde_json::from_str(json).unwrap();
-            assert_eq!(comment_type.id(), "question");
-        }
 
         #[test]
         fn comment_type_defaults_to_none() {
@@ -385,14 +323,6 @@ mod tests {
             assert!(CommentType::from_id("").is_none());
             assert!(CommentType::from_id("   ").is_none());
             assert!(!CommentType::from_id("issue").is_none());
-        }
-
-        #[test]
-        fn comment_type_none_roundtrips_via_serde() {
-            let json = serde_json::to_string(&CommentType::None).unwrap();
-            assert_eq!(json, "\"none\"");
-            let restored: CommentType = serde_json::from_str(&json).unwrap();
-            assert_eq!(restored, CommentType::None);
         }
 
         #[test]
@@ -425,55 +355,6 @@ mod tests {
         }
 
         #[test]
-        fn comment_with_line_range_serializes_correctly() {
-            let range = LineRange::new(10, 15);
-            let comment = Comment::new_with_range(
-                "Test".to_string(),
-                CommentType::from_id("note"),
-                Some(LineSide::New),
-                range,
-            );
-            let json = serde_json::to_string(&comment).unwrap();
-            assert!(json.contains("\"line_range\""));
-            assert!(json.contains("\"start\":10"));
-            assert!(json.contains("\"end\":15"));
-        }
-
-        #[test]
-        fn comment_without_line_range_deserializes_with_none() {
-            // Simulate old format without line_range field
-            let json = r#"{
-                "id": "test-id",
-                "content": "Test comment",
-                "comment_type": "note",
-                "created_at": "2024-01-01T00:00:00Z",
-                "line_context": null,
-                "side": "new"
-            }"#;
-            let comment: Comment = serde_json::from_str(json).unwrap();
-            assert!(comment.line_range.is_none());
-            assert_eq!(comment.content, "Test comment");
-        }
-
-        #[test]
-        fn comment_with_line_range_deserializes_correctly() {
-            let json = r#"{
-                "id": "test-id",
-                "content": "Range comment",
-                "comment_type": "issue",
-                "created_at": "2024-01-01T00:00:00Z",
-                "line_context": null,
-                "side": "old",
-                "line_range": {"start": 10, "end": 15}
-            }"#;
-            let comment: Comment = serde_json::from_str(json).unwrap();
-            assert!(comment.line_range.is_some());
-            let range = comment.line_range.unwrap();
-            assert_eq!(range.start, 10);
-            assert_eq!(range.end, 15);
-        }
-
-        #[test]
         fn should_default_lifecycle_state_to_local_draft_for_new_comment() {
             // given/when
             let comment = Comment::new("hi".to_string(), CommentType::from_id("note"), None);
@@ -494,45 +375,6 @@ mod tests {
             // then
             assert!(pushed.is_locked());
             assert!(submitted.is_locked());
-        }
-
-        #[test]
-        fn should_roundtrip_lifecycle_fields_via_serde() {
-            // given
-            let mut original =
-                Comment::new("body".to_string(), CommentType::from_id("issue"), None);
-            original.lifecycle_state = CommentLifecycleState::Submitted;
-            original.remote_review_id = Some("R_kgDOEx".to_string());
-            original.remote_comment_id = Some("RC_kgDOEx".to_string());
-            // when
-            let json = serde_json::to_string(&original).unwrap();
-            let restored: Comment = serde_json::from_str(&json).unwrap();
-            // then
-            assert_eq!(restored.lifecycle_state, CommentLifecycleState::Submitted);
-            assert_eq!(restored.remote_review_id.as_deref(), Some("R_kgDOEx"));
-            assert_eq!(restored.remote_comment_id.as_deref(), Some("RC_kgDOEx"));
-        }
-
-        #[test]
-        fn should_default_lifecycle_fields_for_pre_pr5_comment_json() {
-            // given — JSON saved before PR 5 introduced lifecycle fields.
-            let json = r#"{
-                "id": "legacy",
-                "content": "pre-pr5",
-                "comment_type": "note",
-                "created_at": "2024-01-01T00:00:00Z",
-                "line_context": null
-            }"#;
-            // when
-            let comment: Comment =
-                serde_json::from_str(json).expect("pre-PR-5 comment JSON should parse");
-            // then
-            assert_eq!(comment.lifecycle_state, CommentLifecycleState::LocalDraft);
-            assert!(comment.remote_review_id.is_none());
-            assert!(comment.remote_comment_id.is_none());
-            // and the rest of the comment survived
-            assert_eq!(comment.id, "legacy");
-            assert_eq!(comment.content, "pre-pr5");
         }
     }
 }

@@ -210,39 +210,16 @@ impl App {
             return;
         };
         let mut matches = Vec::new();
-        let mut pr_info_lines = None;
-        let mut last_thread_match: Option<(usize, bool)> = None;
         for line_idx in 0..self.line_annotations.len() {
-            let matched = match self.line_annotations.get(line_idx) {
-                Some(AnnotatedLine::RemoteThreadLine { thread_idx }) => match last_thread_match {
-                    Some((last_idx, last_matched)) if last_idx == *thread_idx => last_matched,
-                    _ => {
-                        let matched = self.thread_matches_search(*thread_idx, needle);
-                        last_thread_match = Some((*thread_idx, matched));
-                        matched
-                    }
-                },
-                _ => self
-                    .line_text_for_search(line_idx, &mut pr_info_lines)
-                    .is_some_and(|text| contains_fold(&text, needle)),
-            };
+            let matched = self
+                .line_text_for_search(line_idx)
+                .is_some_and(|text| contains_fold(&text, needle));
             if matched {
                 matches.push(line_idx);
             }
         }
         debug_assert!(matches.is_sorted());
         self.search_matches = matches;
-    }
-
-    fn thread_matches_search(&self, thread_idx: usize, needle: &str) -> bool {
-        let Some(thread) = self.forge_review_threads.get(thread_idx) else {
-            return false;
-        };
-        contains_fold(&format!("github {}", thread.path), needle)
-            || thread
-                .comments
-                .iter()
-                .any(|comment| contains_fold(&comment.body, needle))
     }
 
     pub fn clear_search_highlight(&mut self) {
@@ -276,53 +253,12 @@ impl App {
         Some(needle)
     }
 
-    fn pr_info_search_lines(&self) -> Vec<String> {
-        let Some(info) = self.pr_info.as_ref() else {
-            return Vec::new();
-        };
-        crate::ui::pr_info_panel::build_pr_info_lines(
-            info,
-            crate::ui::pr_info_panel::pr_info_content_width(self.diff_state.viewport_width),
-            &self.theme,
-        )
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
-    }
-
-    fn line_text_for_search<'a>(
-        &'a self,
-        line_idx: usize,
-        pr_info_lines: &'a mut Option<Vec<String>>,
-    ) -> Option<Cow<'a, str>> {
+    fn line_text_for_search(&self, line_idx: usize) -> Option<Cow<'_, str>> {
         match self.line_annotations.get(line_idx)? {
-            AnnotatedLine::PrInfoLine { line_idx } => pr_info_lines
-                .get_or_insert_with(|| self.pr_info_search_lines())
-                .get(*line_idx)
-                .map(|line| Cow::Borrowed(line.as_str())),
-            AnnotatedLine::IssueCommentsHeader => {
-                let info = self.pr_info.as_ref()?;
-                Some(Cow::Owned(format!("PR #{} Comments", info.details.number)))
-            }
-            AnnotatedLine::IssueComment { comment_idx } => {
-                let info = self.pr_info.as_ref()?;
-                let comment = info.issue_comments.get(*comment_idx)?;
-                Some(Cow::Borrowed(comment.body.as_str()))
-            }
             AnnotatedLine::ReviewCommentsHeader => Some(Cow::Borrowed("Review comments")),
             AnnotatedLine::ReviewComment { comment_idx } => {
                 let comment = self.session.review_comments.get(*comment_idx)?;
                 Some(Cow::Borrowed(comment.content.as_str()))
-            }
-            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
-                let summary = self.forge_review_summaries.get(*summary_idx)?;
-                let author = summary.author.as_deref().unwrap_or("unknown");
-                Some(Cow::Owned(format!("github @{author} {}", summary.body)))
             }
             AnnotatedLine::FileHeader { file_idx } => {
                 let file = self.diff_files.get(*file_idx)?;
@@ -424,9 +360,7 @@ impl App {
                     .unwrap_or("");
                 Some(Cow::Owned(format!("{} {}", del_content, add_content)))
             }
-            AnnotatedLine::RemoteThreadLine { .. }
-            | AnnotatedLine::Spacing
-            | AnnotatedLine::ReviewedBanner { .. } => None,
+            AnnotatedLine::Spacing | AnnotatedLine::ReviewedBanner { .. } => None,
         }
     }
 }
