@@ -57,10 +57,6 @@ pub enum Action {
 
     // Session
     Quit,
-    /// Transitional hint for the removed `q`-quits binding: shows a message
-    /// pointing at `:q` instead of quitting. Drop this a few releases after
-    /// the `q` removal has had time to land.
-    QuitHint,
     ExportToClipboard,
     /// Copy just the comment under the cursor (`Y`), not the whole review.
     CopyCommentAtCursor,
@@ -213,8 +209,7 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('?'), _) => Action::ToggleHelp,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ClearSearchHighlight,
 
-        // Transitional hint: q used to quit; now it just points at :q.
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
 
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleExpand,
         (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
@@ -442,7 +437,7 @@ fn map_visual_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::ExitMode,
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::QuitHint,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
     }
 }
@@ -911,9 +906,13 @@ mod tests {
     fn should_map_q_by_mode() {
         assert_eq!(
             map_normal_mode(key(KeyCode::Char('q')), DEFAULT_LEADER_KEY),
-            Action::QuitHint
+            Action::Quit
         );
-        assert_eq!(map_visual_mode(key(KeyCode::Char('q'))), Action::QuitHint);
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('q')), DEFAULT_LEADER_KEY),
+            Action::Quit
+        );
+        assert_eq!(map_visual_mode(key(KeyCode::Char('q'))), Action::Quit);
         assert_eq!(
             map_commit_select_mode(key(KeyCode::Char('q'))),
             Action::Quit
