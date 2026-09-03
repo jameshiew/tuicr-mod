@@ -23,7 +23,7 @@ use crate::vcs::{
     ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
 };
 
-const VISIBLE_COMMIT_COUNT: usize = 10;
+const VISIBLE_COMMIT_COUNT: usize = 50;
 const COMMIT_PAGE_SIZE: usize = 10;
 pub const DEFAULT_DIFF_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
