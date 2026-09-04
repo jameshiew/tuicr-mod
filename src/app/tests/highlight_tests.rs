@@ -1,6 +1,7 @@
-//! Viewport-driven highlighting as seen through real frames: only rows near
-//! the viewport get spans, a jump into a huge hunk stays responsive and fills
-//! in over later frames, and a reload starts the new lines from scratch.
+//! Viewport-driven highlighting as seen through real frames: only the part of
+//! the diff near the viewport gets spans, a jump into a huge hunk stays
+//! responsive and fills in over later frames, and a reload starts the new
+//! lines from scratch.
 
 use crate::app::*;
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
@@ -130,9 +131,11 @@ fn should_highlight_only_rows_near_the_viewport() {
         first > 0,
         "visible rows must be highlighted after one frame"
     );
+    // A hunk is highlighted a window at a time rather than a row at a time,
+    // so the frame pays for one window, not for the 5,000-line hunk.
     assert!(
-        first < 200,
-        "only the viewport plus a margin should be highlighted, got {first}"
+        first < 2_000,
+        "one frame should not highlight the whole hunk, got {first}"
     );
     assert_eq!(
         highlighted_count(&app.diff_files[1]),

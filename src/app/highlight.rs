@@ -8,9 +8,9 @@
 
 use super::*;
 
-/// Most diff lines highlighted in one frame. Roughly 40µs per line on a
-/// typical grammar, so the cap holds a frame to tens of milliseconds even
-/// when every line on screen is new.
+/// Most diff lines highlighted in one frame. A hunk is only ever advanced a
+/// window at a time, so the cap is what stops several long hunks from being
+/// parsed in the same frame.
 const HIGHLIGHT_LINES_PER_FRAME: usize = 1_000;
 
 /// Rows highlighted beyond each edge of the viewport, so ordinary scrolling
@@ -85,8 +85,7 @@ impl App {
                 pending = true;
                 break;
             }
-            let processed =
-                highlighter.advance_file(&mut self.highlight_states, file, hunk_idx, upto, budget);
+            let processed = highlighter.advance_file(file, hunk_idx, upto, budget);
             budget = budget.saturating_sub(processed);
             if !file.hunks[hunk_idx].highlight.covers(upto) {
                 pending = true;

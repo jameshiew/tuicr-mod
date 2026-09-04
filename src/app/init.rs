@@ -498,7 +498,6 @@ impl App {
             expanded_top: HashMap::new(),
             expanded_bottom: HashMap::new(),
             file_line_count_cache: HashMap::new(),
-            highlight_states: HunkStates::default(),
             highlight_pending: false,
             line_annotations: Vec::new(),
             output_to_stdout,

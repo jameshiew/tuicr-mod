@@ -10,17 +10,9 @@ use std::{
 };
 
 use ratatui::style::Color;
-use syntect::highlighting::ThemeSet;
-use two_face::theme::EmbeddedThemeName;
 
 use crate::config::themes_dir;
-use crate::syntax::SyntaxHighlighter;
-
-#[derive(Clone)]
-pub enum SyntaxThemeSource {
-    Embedded(EmbeddedThemeName),
-    Custom(Box<syntect::highlighting::Theme>),
-}
+use crate::syntax::{SyntaxHighlighter, SyntaxPalette};
 
 /// Complete color theme for the application
 pub struct Theme {
@@ -49,9 +41,10 @@ pub struct Theme {
     pub syntax_add_bg: Color,
     pub syntax_del_bg: Color,
 
-    // Syntax highlighting source. Bundled themes use an embedded theme;
-    // local themes may preload a custom `.tmTheme`.
-    pub syntax_theme: SyntaxThemeSource,
+    // Colours for syntax highlighting. tree-sitter grammars label code by
+    // role rather than by TextMate scope, so a theme names colours instead
+    // of shipping a theme file (see `syntax::palette`).
+    pub syntax: SyntaxPalette,
 
     // File status colors
     pub file_added: Color,
@@ -123,8 +116,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(0, 35, 12),
             syntax_del_bg: Color::Rgb(45, 0, 0),
 
-            // Syntect theme for syntax highlighting
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16EightiesDark),
+            syntax: SyntaxPalette::dark(),
 
             // File status colors
             file_added: Color::Rgb(80, 220, 120),
@@ -192,8 +184,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(220, 255, 220), // Very light green
             syntax_del_bg: Color::Rgb(255, 230, 230), // Very light pink
 
-            // Syntect theme for syntax highlighting (light variant)
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16OceanLight),
+            syntax: SyntaxPalette::light(),
 
             // File status colors
             file_added: Color::Rgb(0, 100, 0),
@@ -271,7 +262,9 @@ impl Theme {
             syntax_add_bg: Color::Rgb(222, 240, 205),
             syntax_del_bg: Color::Rgb(252, 225, 224),
 
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::SolarizedLight),
+            syntax: solarized_syntax(
+                base00, base1, yellow, orange, red, violet, blue, cyan, green,
+            ),
 
             file_added: green,
             file_modified: yellow,
@@ -342,7 +335,9 @@ impl Theme {
             syntax_add_bg: Color::Rgb(0, 60, 20),
             syntax_del_bg: Color::Rgb(70, 0, 0),
 
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::SolarizedDark),
+            syntax: solarized_syntax(
+                base0, base01, yellow, orange, red, violet, blue, cyan, green,
+            ),
 
             file_added: green,
             file_modified: yellow,
@@ -399,7 +394,7 @@ impl Theme {
             peach: rgb(254, 100, 11),
             pink: rgb(234, 118, 203),
         };
-        catppuccin_theme(flavor, EmbeddedThemeName::CatppuccinLatte)
+        catppuccin_theme(flavor)
     }
 
     pub fn catppuccin_frappe() -> Self {
@@ -423,7 +418,7 @@ impl Theme {
             peach: rgb(239, 159, 118),
             pink: rgb(244, 184, 228),
         };
-        catppuccin_theme(flavor, EmbeddedThemeName::CatppuccinFrappe)
+        catppuccin_theme(flavor)
     }
 
     pub fn catppuccin_macchiato() -> Self {
@@ -447,7 +442,7 @@ impl Theme {
             peach: rgb(245, 169, 127),
             pink: rgb(245, 189, 230),
         };
-        catppuccin_theme(flavor, EmbeddedThemeName::CatppuccinMacchiato)
+        catppuccin_theme(flavor)
     }
 
     pub fn catppuccin_mocha() -> Self {
@@ -471,7 +466,7 @@ impl Theme {
             peach: rgb(250, 179, 135),
             pink: rgb(245, 194, 231),
         };
-        catppuccin_theme(flavor, EmbeddedThemeName::CatppuccinMocha)
+        catppuccin_theme(flavor)
     }
 
     pub fn ayu_light() -> Self {
@@ -498,8 +493,24 @@ impl Theme {
             syntax_add_bg: Color::Rgb(244, 251, 228),
             syntax_del_bg: Color::Rgb(255, 241, 242),
 
-            // Syntect theme for syntax highlighting
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfLight),
+            // Ayu Light's own syntax tokens; the UI palette above is too
+            // pale to double as one.
+            syntax: SyntaxPalette {
+                keyword: rgb(250, 141, 62),
+                string: rgb(134, 179, 0),
+                number: rgb(163, 122, 204),
+                constant: rgb(163, 122, 204),
+                function: rgb(242, 174, 73),
+                type_name: rgb(85, 180, 212),
+                property: rgb(57, 158, 230),
+                operator: rgb(237, 147, 102),
+                attribute: rgb(242, 174, 73),
+                tag: rgb(85, 180, 212),
+                namespace: rgb(57, 158, 230),
+                escape: rgb(76, 191, 153),
+                error: rgb(240, 113, 120),
+                ..SyntaxPalette::plain(rgb(92, 103, 115), rgb(171, 176, 182))
+            },
 
             // File status colors
             file_added: Color::Rgb(134, 179, 0),
@@ -584,8 +595,23 @@ impl Theme {
             syntax_add_bg: Color::Rgb(30, 47, 36),
             syntax_del_bg: Color::Rgb(50, 30, 35),
 
-            // Closest embedded base16 dark to the Ayu Mirage feel.
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16EightiesDark),
+            syntax: SyntaxPalette {
+                keyword: orange,
+                string: green,
+                number: purple,
+                constant: purple,
+                function: yellow,
+                type_name: blue,
+                property: blue,
+                operator: orange,
+                punctuation: fg_secondary,
+                attribute: yellow,
+                tag: cyan,
+                namespace: blue,
+                escape: mint,
+                error: red,
+                ..SyntaxPalette::plain(fg, comment)
+            },
 
             file_added: green,
             file_modified: yellow,
@@ -645,8 +671,23 @@ impl Theme {
             syntax_add_bg: Color::Rgb(37, 49, 38),
             syntax_del_bg: Color::Rgb(59, 37, 40),
 
-            // Syntect theme for syntax highlighting
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfDark),
+            syntax: SyntaxPalette {
+                keyword: Color::Rgb(198, 120, 221),
+                string: Color::Rgb(152, 195, 121),
+                number: Color::Rgb(209, 154, 102),
+                constant: Color::Rgb(209, 154, 102),
+                function: Color::Rgb(97, 175, 239),
+                type_name: Color::Rgb(229, 192, 123),
+                variable: Color::Rgb(224, 108, 117),
+                property: Color::Rgb(224, 108, 117),
+                operator: Color::Rgb(86, 182, 194),
+                attribute: Color::Rgb(229, 192, 123),
+                tag: Color::Rgb(224, 108, 117),
+                namespace: Color::Rgb(229, 192, 123),
+                escape: Color::Rgb(86, 182, 194),
+                error: Color::Rgb(224, 108, 117),
+                ..SyntaxPalette::plain(Color::Rgb(171, 178, 191), Color::Rgb(92, 99, 112))
+            },
 
             // File status colors
             file_added: Color::Rgb(152, 195, 121),
@@ -710,7 +751,10 @@ impl Theme {
             syntax_add_bg: Color::Rgb(230, 255, 236),
             syntax_del_bg: Color::Rgb(255, 235, 233),
 
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::InspiredGithub),
+            syntax: SyntaxPalette {
+                text: Color::Rgb(31, 35, 40),
+                ..SyntaxPalette::light()
+            },
 
             file_added: Color::Rgb(26, 127, 55),
             file_modified: Color::Rgb(154, 103, 0),
@@ -768,7 +812,7 @@ impl Theme {
             syntax_add_bg: Color::Rgb(16, 35, 28),
             syntax_del_bg: Color::Rgb(48, 27, 31),
 
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfDark),
+            syntax: github_dark_syntax(),
 
             file_added: Color::Rgb(63, 185, 80),
             file_modified: Color::Rgb(210, 153, 34),
@@ -825,7 +869,14 @@ impl Theme {
             syntax_add_bg: Color::Rgb(0x1e, 0x42, 0x73),
             syntax_del_bg: Color::Rgb(0x5f, 0x36, 0x1e),
 
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::OneHalfDark),
+            // The colorblind variant swaps the red/green diff signals; the
+            // syntax palette follows by keeping red out of the two roles that
+            // carry the most text.
+            syntax: SyntaxPalette {
+                keyword: Color::Rgb(0xf0, 0x88, 0x3e),
+                tag: Color::Rgb(0x79, 0xc0, 0xff),
+                ..github_dark_syntax()
+            },
 
             file_added: Color::Rgb(0x58, 0xa6, 0xff),
             file_modified: Color::Rgb(0xd2, 0x99, 0x22),
@@ -899,8 +950,9 @@ impl Theme {
             syntax_add_bg: Color::Rgb(28, 42, 52),
             syntax_del_bg: Color::Rgb(47, 30, 38),
 
-            // Closest embedded base16 dark with the muted blue/purple feel
-            syntax_theme: SyntaxThemeSource::Embedded(EmbeddedThemeName::Base16EightiesDark),
+            syntax: tokyo_night_syntax(
+                fg, comment, blue, cyan, magenta, orange, yellow, green, red,
+            ),
 
             file_added: green,
             file_modified: yellow,
@@ -974,10 +1026,9 @@ impl Theme {
             syntax_add_bg: Color::Rgb(216, 230, 236), // #d8e6ec
             syntax_del_bg: Color::Rgb(245, 213, 217), // #f5d5d9
 
-            // Bundled tmTheme drawn from the tokyo-night-day palette. The
-            // previous Base16 Ocean Light pick washed out comments, strings,
-            // and method names on the #e1e2e7 background.
-            syntax_theme: SyntaxThemeSource::Custom(Box::new(tokyo_night_day_syntax_theme())),
+            syntax: tokyo_night_syntax(
+                fg, comment, blue, cyan, magenta, orange, yellow, green, red,
+            ),
 
             file_added: green,
             file_modified: yellow,
@@ -1077,7 +1128,6 @@ impl Theme {
             orange: rgb(208, 135, 112), // nord12
             yellow: rgb(235, 203, 139), // nord13
             green: rgb(163, 190, 140),  // nord14
-            syntect_theme: EmbeddedThemeName::Nord,
         })
     }
 
@@ -1097,7 +1147,6 @@ impl Theme {
             orange: rgb(208, 135, 112), // nord12
             yellow: rgb(235, 203, 139), // nord13
             green: rgb(163, 190, 140),  // nord14
-            syntect_theme: EmbeddedThemeName::Base16OceanLight,
         })
     }
 
@@ -1117,7 +1166,6 @@ impl Theme {
             orange: rgb(208, 135, 112), // nord12
             yellow: rgb(235, 203, 139), // nord13
             green: rgb(163, 190, 140),  // nord14
-            syntect_theme: EmbeddedThemeName::Nord,
         })
     }
 
@@ -1137,7 +1185,6 @@ impl Theme {
             orange: rgb(208, 135, 112), // nord12
             yellow: rgb(235, 203, 139), // nord13
             green: rgb(163, 190, 140),  // nord14
-            syntect_theme: EmbeddedThemeName::Base16OceanLight,
         })
     }
 
@@ -1162,9 +1209,6 @@ impl Theme {
             aqua: rgb(131, 192, 146),   // #83c092
             blue: rgb(127, 187, 179),   // #7fbbb3
             purple: rgb(214, 153, 182), // #d699b6
-            // two-face has no Everforest syntect theme; Gruvbox is the
-            // closest warm, low-saturation, earthy match available.
-            syntect_theme: EmbeddedThemeName::GruvboxDark,
         })
     }
 
@@ -1189,9 +1233,6 @@ impl Theme {
             aqua: rgb(53, 167, 124),      // #35a77c
             blue: rgb(58, 148, 197),      // #3a94c5
             purple: rgb(223, 105, 186),   // #df69ba
-            // two-face has no Everforest syntect theme; Gruvbox is the
-            // closest warm, low-saturation, earthy match available.
-            syntect_theme: EmbeddedThemeName::GruvboxLight,
         })
     }
 }
@@ -1234,7 +1275,6 @@ struct NordFlavor {
     orange: Color,
     yellow: Color,
     green: Color,
-    syntect_theme: EmbeddedThemeName,
 }
 
 #[derive(Clone, Copy)]
@@ -1257,7 +1297,6 @@ struct EverforestFlavor {
     aqua: Color,
     blue: Color,
     purple: Color,
-    syntect_theme: EmbeddedThemeName,
 }
 
 #[derive(Clone, Copy)]
@@ -1286,12 +1325,6 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
 
-fn tokyo_night_day_syntax_theme() -> syntect::highlighting::Theme {
-    const BYTES: &[u8] = include_bytes!("tokyo-night-day.tmTheme");
-    ThemeSet::load_from_reader(&mut std::io::Cursor::new(BYTES))
-        .expect("bundled tokyo-night-day.tmTheme must parse")
-}
-
 fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
     debug_assert!(accent_percent <= 100);
     match (base, accent) {
@@ -1306,7 +1339,124 @@ fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
     }
 }
 
-fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) -> Theme {
+/// Solarized's published syntax assignments, which both variants share —
+/// only the foreground and comment colours differ between them.
+#[allow(clippy::too_many_arguments)]
+fn solarized_syntax(
+    text: Color,
+    comment: Color,
+    yellow: Color,
+    orange: Color,
+    red: Color,
+    violet: Color,
+    blue: Color,
+    cyan: Color,
+    green: Color,
+) -> SyntaxPalette {
+    SyntaxPalette {
+        keyword: green,
+        string: cyan,
+        number: cyan,
+        constant: cyan,
+        function: blue,
+        type_name: yellow,
+        variable: blue,
+        property: blue,
+        operator: green,
+        attribute: orange,
+        tag: blue,
+        namespace: violet,
+        escape: red,
+        error: red,
+        ..SyntaxPalette::plain(text, comment)
+    }
+}
+
+/// Primer's dark syntax tokens, shared by both GitHub dark themes.
+fn github_dark_syntax() -> SyntaxPalette {
+    SyntaxPalette {
+        keyword: rgb(0xff, 0x7b, 0x72),
+        string: rgb(0xa5, 0xd6, 0xff),
+        number: rgb(0x79, 0xc0, 0xff),
+        constant: rgb(0x79, 0xc0, 0xff),
+        function: rgb(0xd2, 0xa8, 0xff),
+        type_name: rgb(0xff, 0xa6, 0x57),
+        property: rgb(0x79, 0xc0, 0xff),
+        operator: rgb(0x79, 0xc0, 0xff),
+        attribute: rgb(0x79, 0xc0, 0xff),
+        tag: rgb(0x7e, 0xe7, 0x87),
+        namespace: rgb(0xff, 0xa6, 0x57),
+        escape: rgb(0x79, 0xc0, 0xff),
+        error: rgb(0xff, 0x7b, 0x72),
+        ..SyntaxPalette::plain(rgb(0xe6, 0xed, 0xf3), rgb(0x8b, 0x94, 0x9e))
+    }
+}
+
+/// Tokyo Night's syntax assignments. Storm and Day use the same roles over
+/// their own accent values.
+#[allow(clippy::too_many_arguments)]
+fn tokyo_night_syntax(
+    text: Color,
+    comment: Color,
+    blue: Color,
+    cyan: Color,
+    magenta: Color,
+    orange: Color,
+    yellow: Color,
+    green: Color,
+    red: Color,
+) -> SyntaxPalette {
+    SyntaxPalette {
+        keyword: magenta,
+        string: green,
+        number: orange,
+        constant: orange,
+        function: blue,
+        type_name: cyan,
+        property: blue,
+        operator: cyan,
+        attribute: yellow,
+        tag: red,
+        namespace: cyan,
+        escape: magenta,
+        error: red,
+        ..SyntaxPalette::plain(text, comment)
+    }
+}
+
+/// Nord's syntax assignments over the frost and aurora accents.
+///
+/// The light variant reuses the same accents as the dark one, and Nord's
+/// aurora colours are pale enough to disappear on `nord6`, so they are mixed
+/// toward the foreground until they read as text.
+fn nord_syntax(flavor: NordFlavor) -> SyntaxPalette {
+    let accent = |color: Color| {
+        if flavor.dark {
+            color
+        } else {
+            blend(flavor.fg0, color, 55)
+        }
+    };
+    SyntaxPalette {
+        keyword: accent(flavor.frost2),
+        string: accent(flavor.green),
+        number: accent(flavor.orange),
+        constant: accent(flavor.orange),
+        function: accent(flavor.frost1),
+        type_name: accent(flavor.frost0),
+        property: accent(flavor.frost0),
+        operator: accent(flavor.frost2),
+        punctuation: flavor.fg1,
+        attribute: accent(flavor.yellow),
+        tag: accent(flavor.frost2),
+        namespace: accent(flavor.frost0),
+        escape: accent(flavor.yellow),
+        error: accent(flavor.red),
+        ..SyntaxPalette::plain(flavor.fg0, flavor.bg3)
+    }
+}
+
+fn catppuccin_theme(flavor: CatppuccinFlavor) -> Theme {
     let accent_fg = if flavor.dark {
         flavor.base
     } else {
@@ -1340,8 +1490,23 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
         syntax_add_bg,
         syntax_del_bg,
 
-        // Syntect theme for syntax highlighting
-        syntax_theme: SyntaxThemeSource::Embedded(syntect_theme),
+        syntax: SyntaxPalette {
+            keyword: flavor.lavender,
+            string: flavor.green,
+            number: flavor.peach,
+            constant: flavor.peach,
+            function: flavor.blue,
+            type_name: flavor.yellow,
+            property: flavor.teal,
+            operator: flavor.teal,
+            punctuation: flavor.subtext1,
+            attribute: flavor.yellow,
+            tag: flavor.blue,
+            namespace: flavor.yellow,
+            escape: flavor.pink,
+            error: flavor.red,
+            ..SyntaxPalette::plain(flavor.text, flavor.overlay1)
+        },
 
         // File status colors
         file_added: flavor.green,
@@ -1384,11 +1549,6 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
 }
 
 fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
-    let syntect_theme = if flavor.dark {
-        EmbeddedThemeName::GruvboxDark
-    } else {
-        EmbeddedThemeName::GruvboxLight
-    };
     let accent_fg = if flavor.dark { flavor.bg0 } else { flavor.fg1 };
 
     Theme {
@@ -1414,8 +1574,23 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
         syntax_add_bg: flavor.bg_green,
         syntax_del_bg: flavor.bg_red,
 
-        // Syntect theme for syntax highlighting
-        syntax_theme: SyntaxThemeSource::Embedded(syntect_theme),
+        syntax: SyntaxPalette {
+            keyword: flavor.red,
+            string: flavor.green,
+            number: flavor.purple,
+            constant: flavor.purple,
+            function: flavor.aqua,
+            type_name: flavor.yellow,
+            variable: flavor.blue,
+            property: flavor.blue,
+            operator: flavor.orange,
+            attribute: flavor.aqua,
+            tag: flavor.red,
+            namespace: flavor.aqua,
+            escape: flavor.orange,
+            error: flavor.red,
+            ..SyntaxPalette::plain(flavor.fg0, flavor.grey0)
+        },
 
         // File status colors
         file_added: flavor.green,
@@ -1482,7 +1657,23 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         syntax_add_bg,
         syntax_del_bg,
 
-        syntax_theme: SyntaxThemeSource::Embedded(flavor.syntect_theme),
+        syntax: SyntaxPalette {
+            keyword: flavor.red,
+            string: flavor.green,
+            number: flavor.purple,
+            constant: flavor.purple,
+            function: flavor.aqua,
+            type_name: flavor.yellow,
+            property: flavor.blue,
+            operator: flavor.orange,
+            punctuation: flavor.grey2,
+            attribute: flavor.aqua,
+            tag: flavor.red,
+            namespace: flavor.aqua,
+            escape: flavor.orange,
+            error: flavor.red,
+            ..SyntaxPalette::plain(flavor.fg, flavor.grey1)
+        },
 
         file_added: flavor.green,
         file_modified: flavor.yellow,
@@ -1545,7 +1736,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
         syntax_add_bg,
         syntax_del_bg,
 
-        syntax_theme: SyntaxThemeSource::Embedded(flavor.syntect_theme),
+        syntax: nord_syntax(flavor),
 
         file_added: flavor.green,
         file_modified: flavor.yellow,
@@ -1897,11 +2088,13 @@ fn is_dark_color(c: Color) -> bool {
     }
 }
 
-fn fallback_embedded_theme_for_panel_bg(panel_bg: Color) -> EmbeddedThemeName {
+/// The syntax palette a local theme starts from when it names no
+/// `syntax_*` colours of its own, chosen to suit its background.
+fn fallback_syntax_palette(panel_bg: Color) -> SyntaxPalette {
     if is_dark_color(panel_bg) {
-        EmbeddedThemeName::Base16EightiesDark
+        SyntaxPalette::dark()
     } else {
-        EmbeddedThemeName::Base16OceanLight
+        SyntaxPalette::light()
     }
 }
 
@@ -1991,57 +2184,58 @@ fn require_local_theme_color(table: &toml::Table, key: &str) -> Result<Color, St
     parse_color_value(raw).ok_or_else(|| format!("Theme key '{key}' could not be parsed"))
 }
 
-fn parse_optional_local_theme_string(
+/// Applies one `syntax_*` key's colour to the palette it belongs to.
+type SyntaxRoleSetter = fn(&mut SyntaxPalette, Color);
+
+/// The `syntax_*` keys, paired with the palette field each one sets.
+///
+/// Every key is optional: an unset role keeps the colour it has in the
+/// palette [`fallback_syntax_palette`] picked for the theme's background.
+const LOCAL_SYNTAX_KEYS: &[(&str, SyntaxRoleSetter)] = &[
+    ("syntax_text", |p, c| p.text = c),
+    ("syntax_comment", |p, c| p.comment = c),
+    ("syntax_keyword", |p, c| p.keyword = c),
+    ("syntax_string", |p, c| p.string = c),
+    ("syntax_number", |p, c| p.number = c),
+    ("syntax_constant", |p, c| p.constant = c),
+    ("syntax_function", |p, c| p.function = c),
+    ("syntax_type", |p, c| p.type_name = c),
+    ("syntax_variable", |p, c| p.variable = c),
+    ("syntax_property", |p, c| p.property = c),
+    ("syntax_operator", |p, c| p.operator = c),
+    ("syntax_punctuation", |p, c| p.punctuation = c),
+    ("syntax_attribute", |p, c| p.attribute = c),
+    ("syntax_tag", |p, c| p.tag = c),
+    ("syntax_namespace", |p, c| p.namespace = c),
+    ("syntax_escape", |p, c| p.escape = c),
+    ("syntax_error", |p, c| p.error = c),
+];
+
+fn parse_local_syntax_palette(
     table: &toml::Table,
-    key: &str,
-) -> Result<Option<String>, String> {
-    let Some(value) = table.get(key) else {
-        return Ok(None);
-    };
-    let raw = value
-        .as_str()
-        .ok_or_else(|| format!("Theme key '{key}' must be a string"))?
-        .trim()
-        .to_string();
-    if raw.is_empty() {
-        return Err(format!("Theme key '{key}' cannot be empty"));
+    panel_bg: Color,
+) -> Result<SyntaxPalette, String> {
+    let mut palette = fallback_syntax_palette(panel_bg);
+    for (key, set) in LOCAL_SYNTAX_KEYS {
+        if table.contains_key(*key) {
+            set(&mut palette, require_local_theme_color(table, key)?);
+        }
     }
-    Ok(Some(raw))
-}
-
-fn load_custom_syntect_theme(
-    theme_path: &Path,
-    syntax_theme: &str,
-) -> Result<syntect::highlighting::Theme, String> {
-    let syntax_path = Path::new(syntax_theme);
-    let resolved = if syntax_path.is_absolute() {
-        syntax_path.to_path_buf()
-    } else {
-        theme_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(syntax_path)
-    };
-
-    if resolved.extension().and_then(|ext| ext.to_str()) != Some("tmTheme") {
-        return Err(format!(
-            "Theme key 'syntax_theme' must point to a .tmTheme file; got '{}'",
-            resolved.display()
-        ));
-    }
-
-    ThemeSet::get_theme(&resolved).map_err(|err| {
-        format!(
-            "Failed to load syntax theme '{}': {err}",
-            resolved.display()
-        )
-    })
+    Ok(palette)
 }
 
 // Keep the local theme schema explicit so unknown-key warnings, docs, and
 // tests stay aligned even though Rust cannot derive TOML field names from the
 // `Theme` struct itself.
-const LOCAL_THEME_KEYS: &[&str] = &[
+fn local_theme_keys() -> Vec<&'static str> {
+    LOCAL_THEME_COLOR_KEYS
+        .iter()
+        .copied()
+        .chain(LOCAL_SYNTAX_KEYS.iter().map(|(key, _)| *key))
+        .collect()
+}
+
+const LOCAL_THEME_COLOR_KEYS: &[&str] = &[
     "panel_bg",
     "bg_highlight",
     "fg_primary",
@@ -2056,7 +2250,6 @@ const LOCAL_THEME_KEYS: &[&str] = &[
     "expanded_context_fg",
     "syntax_add_bg",
     "syntax_del_bg",
-    "syntax_theme",
     "file_added",
     "file_modified",
     "file_deleted",
@@ -2094,8 +2287,9 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
         .ok_or_else(|| format!("Local theme '{}' must be a TOML table", path.display()))?;
 
     let mut warnings = Vec::new();
+    let known_keys = local_theme_keys();
     for key in table.keys() {
-        if !LOCAL_THEME_KEYS.contains(&key.as_str()) {
+        if !known_keys.contains(&key.as_str()) {
             warnings.push(format!(
                 "Warning: Unknown local theme key '{key}' in '{}', ignoring",
                 path.display()
@@ -2112,11 +2306,7 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
             path.display()
         ));
     }
-    let syntax_theme = parse_optional_local_theme_string(table, "syntax_theme")?;
-    let syntax_theme = match syntax_theme.as_deref() {
-        Some(value) => SyntaxThemeSource::Custom(Box::new(load_custom_syntect_theme(path, value)?)),
-        None => SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg)),
-    };
+    let syntax = parse_local_syntax_palette(table, panel_bg)?;
 
     let theme = Theme {
         highlighter: OnceLock::new(),
@@ -2134,7 +2324,7 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
         expanded_context_fg: require_local_theme_color(table, "expanded_context_fg")?,
         syntax_add_bg: require_local_theme_color(table, "syntax_add_bg")?,
         syntax_del_bg: require_local_theme_color(table, "syntax_del_bg")?,
-        syntax_theme,
+        syntax,
         file_added: require_local_theme_color(table, "file_added")?,
         file_modified: require_local_theme_color(table, "file_modified")?,
         file_deleted: require_local_theme_color(table, "file_deleted")?,
@@ -2348,29 +2538,7 @@ impl Theme {
     }
 
     fn build_highlighter(&self) -> SyntaxHighlighter {
-        match &self.syntax_theme {
-            SyntaxThemeSource::Embedded(theme) => {
-                SyntaxHighlighter::new(*theme, self.syntax_add_bg, self.syntax_del_bg)
-            }
-            SyntaxThemeSource::Custom(theme) => SyntaxHighlighter::with_theme(
-                *theme.clone(),
-                self.syntax_add_bg,
-                self.syntax_del_bg,
-            ),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn embedded_syntax_theme_name(&self) -> Option<EmbeddedThemeName> {
-        match self.syntax_theme {
-            SyntaxThemeSource::Embedded(theme) => Some(theme),
-            SyntaxThemeSource::Custom(_) => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn uses_custom_syntax_theme(&self) -> bool {
-        matches!(self.syntax_theme, SyntaxThemeSource::Custom(_))
+        SyntaxHighlighter::new(self.syntax, self.syntax_add_bg, self.syntax_del_bg)
     }
 
     /// Subtle row-tint for diff section markers (hunk headers, gap
@@ -2406,30 +2574,6 @@ mod tests {
         path::{Path, PathBuf},
     };
     use tempfile::tempdir;
-
-    fn sample_tm_theme() -> &'static str {
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>name</key>
-  <string>Fixture Theme</string>
-  <key>settings</key>
-  <array>
-    <dict>
-      <key>settings</key>
-      <dict>
-        <key>foreground</key>
-        <string>#c3ccdc</string>
-        <key>background</key>
-        <string>#011627</string>
-      </dict>
-    </dict>
-  </array>
-</dict>
-</plist>
-"#
-    }
 
     fn sample_local_theme_body(extra: &str) -> String {
         format!(
@@ -2509,10 +2653,7 @@ mode_bg = "#82aaff"
             None,
         )
         .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16OceanLight)
-        );
+        assert_eq!(resolved.syntax, Theme::light().syntax);
         assert!(warnings.is_empty());
     }
 
@@ -2521,10 +2662,7 @@ mode_bg = "#82aaff"
         let (resolved, warnings) =
             resolve_theme_with_config(None, None, Some("light"), None, None, None)
                 .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16OceanLight)
-        );
+        assert_eq!(resolved.syntax, Theme::light().syntax);
         assert!(warnings.is_empty());
     }
 
@@ -2539,10 +2677,7 @@ mode_bg = "#82aaff"
             None,
         )
         .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16EightiesDark)
-        );
+        assert_eq!(resolved.syntax, Theme::dark().syntax);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("Unknown theme 'unknown'"));
     }
@@ -2552,10 +2687,7 @@ mode_bg = "#82aaff"
         let (resolved, warnings) =
             resolve_theme_with_config(None, Some(AppearanceArg::Dark), None, None, None, None)
                 .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16EightiesDark)
-        );
+        assert_eq!(resolved.syntax, Theme::dark().syntax);
         assert!(warnings.is_empty());
     }
 
@@ -2564,41 +2696,66 @@ mode_bg = "#82aaff"
         let (resolved, warnings) =
             resolve_theme_with_config(None, None, Some("catppuccin-fRappe"), None, None, None)
                 .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::CatppuccinFrappe)
-        );
+        assert_eq!(resolved.syntax, Theme::catppuccin_frappe().syntax);
         assert!(warnings.is_empty());
     }
 
     #[test]
     fn should_resolve_local_theme_name_from_directory() {
         let dir = tempdir().expect("failed to create temp dir");
-        let tm_theme_path = dir.path().join("example.tmTheme");
-        fs::write(&tm_theme_path, sample_tm_theme()).expect("failed to write tmTheme");
         write_local_theme(
             dir.path(),
             "local-teal",
-            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
+            &sample_local_theme_body(r##"syntax_keyword = "#2dd4bf""##),
         );
 
         let (theme, warnings) = resolve_theme_name("local-teal", dir.path())
             .expect("theme resolution should succeed")
             .expect("theme should exist");
         assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
-        assert!(theme.uses_custom_syntax_theme());
+        assert_eq!(theme.syntax.keyword, Color::Rgb(0x2d, 0xd4, 0xbf));
         assert!(warnings.is_empty());
+    }
+
+    /// An unset role keeps the colour from the palette chosen for the
+    /// background, so a theme naming one colour does not lose the rest.
+    #[test]
+    fn should_fill_unnamed_local_syntax_roles_from_the_background_palette() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = write_local_theme(
+            dir.path(),
+            "local-teal",
+            &sample_local_theme_body(r##"syntax_keyword = "#2dd4bf""##),
+        );
+
+        let (theme, _) = load_local_theme_from_path(&path).expect("local theme should load");
+        assert_eq!(theme.syntax.keyword, Color::Rgb(0x2d, 0xd4, 0xbf));
+        assert_eq!(theme.syntax.string, SyntaxPalette::dark().string);
+        assert_eq!(theme.syntax.comment, SyntaxPalette::dark().comment);
+    }
+
+    /// `syntax_theme` pointed at a `.tmTheme`, which has no tree-sitter
+    /// equivalent; it now warns like any other unknown key rather than
+    /// failing to load.
+    #[test]
+    fn should_warn_on_a_retired_syntax_theme_key() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = write_local_theme(
+            dir.path(),
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
+        );
+
+        let (theme, warnings) = load_local_theme_from_path(&path).expect("local theme should load");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Unknown local theme key 'syntax_theme'"));
+        assert_eq!(theme.syntax.keyword, SyntaxPalette::dark().keyword);
     }
 
     #[test]
     fn should_warn_on_unknown_local_theme_key() {
         let dir = tempdir().expect("failed to create temp dir");
-        fs::write(dir.path().join("example.tmTheme"), sample_tm_theme())
-            .expect("failed to write tmTheme");
-        let body = format!(
-            "{}\nextra_key = \"ignored\"\n",
-            sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#)
-        );
+        let body = format!("{}\nextra_key = \"ignored\"\n", sample_local_theme_body(""));
         let path = write_local_theme(dir.path(), "local-teal", &body);
 
         let (_, warnings) =
@@ -2647,7 +2804,7 @@ mode_bg = "#82aaff"
         assert_eq!(theme.panel_bg, Color::Rgb(6, 40, 50));
         assert_eq!(theme.mode_bg, Color::Rgb(78, 227, 255));
         assert_eq!(theme.search_match_bg, Color::Rgb(76, 86, 67));
-        assert!(theme.uses_custom_syntax_theme());
+        assert_eq!(theme.syntax.keyword, Color::Rgb(0x2d, 0xd4, 0xbf));
     }
 
     #[test]
@@ -2662,10 +2819,7 @@ mode_bg = "#82aaff"
         let (resolved, warnings) =
             resolve_theme_with_config(None, Some(AppearanceArg::Light), None, None, None, None)
                 .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16OceanLight)
-        );
+        assert_eq!(resolved.syntax, Theme::light().syntax);
         assert!(warnings.is_empty());
     }
 
@@ -2680,10 +2834,7 @@ mode_bg = "#82aaff"
             None,
         )
         .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::GruvboxLight)
-        );
+        assert_eq!(resolved.syntax, Theme::gruvbox_light().syntax);
         assert!(warnings.is_empty());
     }
 
@@ -2698,66 +2849,40 @@ mode_bg = "#82aaff"
             None,
         )
         .expect("theme resolution should succeed");
-        assert_eq!(
-            resolved.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::GruvboxDark)
-        );
+        assert_eq!(resolved.syntax, Theme::gruvbox_dark().syntax);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("only theme_dark is configured"));
     }
 
+    /// Every bundled theme owns a syntax palette now that there is no theme
+    /// file to fall back on, so a theme that forgot one would render code in
+    /// a single flat colour. Check the roles that carry most of a diff.
     #[test]
-    fn should_resolve_catppuccin_mocha_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::CatppuccinMocha);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::CatppuccinMocha)
-        );
-    }
-
-    #[test]
-    fn should_resolve_catppuccin_latte_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::CatppuccinLatte);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::CatppuccinLatte)
-        );
-    }
-
-    #[test]
-    fn should_resolve_nord_dark_to_nord_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::NordDark);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Nord)
-        );
-    }
-
-    #[test]
-    fn should_resolve_nord_light_to_ocean_light_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::NordLight);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16OceanLight)
-        );
-    }
-
-    #[test]
-    fn should_resolve_nord_dark_high_contrast_to_nord_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::NordDarkHighContrast);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Nord)
-        );
-    }
-
-    #[test]
-    fn should_resolve_nord_light_high_contrast_to_ocean_light_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::NordLightHighContrast);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::Base16OceanLight)
-        );
+    fn every_bundled_theme_should_colour_the_common_syntax_roles() {
+        for (name, arg) in THEME_CHOICES {
+            let theme = resolve_theme(arg);
+            let syntax = theme.syntax;
+            let roles = [
+                ("comment", syntax.comment),
+                ("keyword", syntax.keyword),
+                ("string", syntax.string),
+                ("function", syntax.function),
+                ("type", syntax.type_name),
+                ("number", syntax.number),
+            ];
+            for (role, color) in roles {
+                assert_ne!(
+                    color, syntax.text,
+                    "{name} leaves {role} at the default foreground"
+                );
+                assert_ne!(color, theme.panel_bg, "{name} paints {role} on itself");
+            }
+            let distinct: HashSet<Color> = roles.iter().map(|(_, c)| *c).collect();
+            assert!(
+                distinct.len() >= 4,
+                "{name} reuses one colour for most roles: {roles:?}"
+            );
+        }
     }
 
     #[test]
@@ -2789,24 +2914,6 @@ mode_bg = "#82aaff"
     }
 
     #[test]
-    fn should_resolve_everforest_dark_to_gruvbox_dark_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::EverforestDark);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::GruvboxDark)
-        );
-    }
-
-    #[test]
-    fn should_resolve_everforest_light_to_gruvbox_light_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::EverforestLight);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::GruvboxLight)
-        );
-    }
-
-    #[test]
     fn should_use_medium_variant_bg0_for_everforest_dark() {
         // Pin the medium-variant bg0 so a hard/medium swap can't slip in.
         let theme = Theme::everforest_dark();
@@ -2819,42 +2926,6 @@ mode_bg = "#82aaff"
         // backgrounds — using bg0 would produce near-white on near-white.
         let theme = Theme::everforest_light();
         assert_eq!(theme.mode_fg, Color::Rgb(92, 106, 114)); // #5c6a72
-    }
-
-    #[test]
-    fn should_resolve_gruvbox_dark_to_dark_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::GruvboxDark);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::GruvboxDark)
-        );
-    }
-
-    #[test]
-    fn should_resolve_gruvbox_light_to_light_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::GruvboxLight);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::GruvboxLight)
-        );
-    }
-
-    #[test]
-    fn should_resolve_ayu_light_to_onehalf_light_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::AyuLight);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::OneHalfLight)
-        );
-    }
-
-    #[test]
-    fn should_resolve_onedark_to_onehalf_dark_syntect_theme() {
-        let theme = resolve_theme(ThemeArg::Onedark);
-        assert_eq!(
-            theme.embedded_syntax_theme_name(),
-            Some(EmbeddedThemeName::OneHalfDark)
-        );
     }
 
     #[test]
@@ -2894,11 +2965,5 @@ mode_bg = "#82aaff"
     fn should_return_accent_for_non_rgb_blend_inputs() {
         let accent = Color::Rgb(100, 110, 120);
         assert_eq!(blend(Color::Reset, accent, 50), accent);
-    }
-
-    #[test]
-    fn should_use_bundled_syntax_theme_for_tokyo_night_day() {
-        let theme = Theme::tokyo_night_day();
-        assert!(theme.uses_custom_syntax_theme());
     }
 }

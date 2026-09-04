@@ -198,8 +198,8 @@ pub fn format_comment_input_lines(
         // cursor_column is already BORDER_PREFIX_WIDTH (cursor at start of content)
     } else {
         let buffer_lines: Vec<&str> = buffer.split('\n').collect();
-        // Markdown-highlight the in-progress text; colors come from the active
-        // syntect theme (same engine/theme as diff code highlighting).
+        // Markdown-highlight the in-progress text; colors come from the
+        // theme's syntax palette, the same one diff code uses.
         let highlighted = theme.syntax_highlighter().highlight_markdown_body(buffer);
         let mut byte_offset = 0;
         // Tracks how many visual lines have been pushed so far (not counting the header).
@@ -293,7 +293,7 @@ pub fn format_comment_input_lines(
 }
 
 /// Render `content` as markdown-highlighted, pre-wrapped lines. Colors come
-/// from the active syntect theme.
+/// from the theme's syntax palette.
 pub(crate) fn markdown_body_lines(
     theme: &Theme,
     content: &str,

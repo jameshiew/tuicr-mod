@@ -514,8 +514,8 @@ mod tests {
 
     #[test]
     fn should_pad_highlighted_spans_to_exact_width() {
-        // given - highlighted spans from the syntax highlighter (which strips
-        // the trailing \n that syntect includes). Short content gets padded
+        // given - highlighted spans from the syntax highlighter. Short
+        // content gets padded
         // by truncate_or_pad_spans; the result must have exactly `width`
         // characters so the side-by-side separator stays aligned.
         let highlighter = crate::syntax::SyntaxHighlighter::default();

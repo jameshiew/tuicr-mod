@@ -1,35 +1,35 @@
 //! Markdown highlighting for review comment bodies, via a CommonMark parser.
 //!
-//! Comment bodies used to go through syntect's `Markdown.sublime-syntax` — the
-//! same path as code highlighting. That grammar is interpreted by oniguruma, a
-//! backtracking regex engine, and its inline rules are ambiguous about how to
-//! pair backtick delimiters. A line carrying several inline code spans drives
-//! exponential backtracking: measured on a 125-byte line, cost grew from 0.17 ms
-//! at two spans to 82 ms at eight, then flattened — the shape of a regex engine
-//! exhausting its retry budget and giving up. The same spans spread one-per-line
-//! cost 0.15 ms, so it is per-line ambiguity, not volume.
+//! Comment bodies could go through the Markdown *grammar* — the same path as
+//! code highlighting — but they do not, and the reason predates tree-sitter:
+//! syntect's `Markdown.sublime-syntax` drove oniguruma into exponential
+//! backtracking on lines carrying several inline code spans (0.17 ms at two
+//! spans, 82 ms at eight, then flat — a regex engine exhausting its retry
+//! budget). `pulldown-cmark` is a single-pass CommonMark parser with no
+//! regex and no backtracking, flat at ~0.01 ms across every span count.
 //!
-//! `pulldown-cmark` is a single-pass CommonMark parser with no regex and no
-//! backtracking, so it cannot exhibit that behaviour. It is flat at ~0.01 ms
-//! across every span count, and faster than the grammar on ordinary prose too.
+//! The tree-sitter Markdown grammar would not backtrack, but it parses in two
+//! passes (block, then an inline grammar injected into it) and its captures
+//! describe document structure rather than the handful of constructs a review
+//! comment uses. `pulldown-cmark` stays: it is faster, and the mapping from
+//! its events to styles is direct.
 //!
-//! syntect is still used for the *contents* of fenced code blocks, where the
-//! language is known and its grammars are being asked to do what they are good
-//! at. Only the markdown layer changes.
+//! Fenced code blocks are still handed to tree-sitter, where the language is
+//! known and a real grammar is worth the work.
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::Style;
-use syntect::highlighting::{Highlighter, Theme};
-use syntect::parsing::Scope;
+use ratatui::style::{Modifier, Style};
+use std::ops::Range;
+use tree_sitter_highlight::HighlightConfiguration;
 
-use super::{HighlightedLines, SyntaxHighlighter};
+use super::palette::SyntaxPalette;
+use super::{HighlightedLines, SyntaxHighlighter, languages};
 
-/// Styles for markdown constructs, resolved once from the active syntect theme
-/// so colours match what the grammar produced for the same text.
+/// Styles for markdown constructs, resolved once from the theme's palette so
+/// prose and the code around it agree on their colours.
 ///
-/// Resolved at construction rather than per call: building a `Highlighter` and
-/// walking the theme's selectors for nine scopes is small but strictly wasted
-/// work on a path that runs for every comment on every frame.
+/// Resolved at construction rather than per call: it is small, but strictly
+/// wasted work on a path that runs for every comment on every frame.
 pub(super) struct MarkdownPalette {
     base: Style,
     heading: Style,
@@ -43,44 +43,34 @@ pub(super) struct MarkdownPalette {
 }
 
 impl MarkdownPalette {
-    pub(super) fn resolve(theme: &Theme) -> Self {
-        let highlighter = Highlighter::new(theme);
-        // Resolve against the scope *stacks* the Sublime grammar produces, not
-        // bare scope names: themes routinely key on an enclosing `meta.*` scope
-        // (links resolve through `meta.link.inline`, not `markup.underline.link`),
-        // so a single-scope lookup silently falls back to the default colour.
-        let style_for = |scopes: &[&str]| -> Style {
-            let stack: Vec<Scope> = scopes.iter().filter_map(|s| Scope::new(s).ok()).collect();
-            SyntaxHighlighter::syntect_to_ratatui_style(highlighter.style_for_stack(&stack))
-        };
-        const ROOT: &str = "text.html.markdown";
+    pub(super) fn resolve(palette: &SyntaxPalette) -> Self {
+        let fg = |color| Style::default().fg(color);
         Self {
-            base: style_for(&[ROOT]),
-            heading: style_for(&[
-                ROOT,
-                "markup.heading.markdown",
-                "entity.name.section.markdown",
-            ]),
-            bold: style_for(&[ROOT, "markup.bold.markdown"]),
-            italic: style_for(&[ROOT, "markup.italic.markdown"]),
-            code: style_for(&[ROOT, "markup.raw.inline.markdown"]),
-            link: style_for(&[
-                ROOT,
-                "meta.link.inline.markdown",
-                "markup.underline.link.markdown",
-            ]),
-            quote: style_for(&[ROOT, "markup.quote.markdown"]),
-            list: style_for(&[ROOT, "markup.list.unnumbered.markdown"]),
-            strike: style_for(&[ROOT, "markup.strikethrough.markdown"]),
+            base: fg(palette.text),
+            heading: fg(palette.keyword).add_modifier(Modifier::BOLD),
+            bold: fg(palette.text).add_modifier(Modifier::BOLD),
+            italic: fg(palette.text).add_modifier(Modifier::ITALIC),
+            code: fg(palette.string),
+            link: fg(palette.function).add_modifier(Modifier::UNDERLINED),
+            quote: fg(palette.comment),
+            list: fg(palette.operator),
+            strike: fg(palette.comment).add_modifier(Modifier::CROSSED_OUT),
         }
     }
+}
+
+/// A fenced block being walked: the grammar to highlight it with, and the
+/// span its text events have covered so far.
+struct OpenCodeBlock {
+    config: &'static HighlightConfiguration,
+    span: Option<Range<usize>>,
 }
 
 /// Markdown-highlight `content` (a whole `\n`-separated body).
 ///
 /// Returns exactly one entry per line of `content`, in order, so callers can
-/// index the result by line. Every entry is `Some`: unlike the grammar path
-/// there is no per-line failure mode to report.
+/// index the result by line. Every entry is `Some`: there is no per-line
+/// failure mode to report.
 pub(super) fn highlight(hl: &SyntaxHighlighter, content: &str) -> HighlightedLines {
     let palette = &hl.markdown_palette;
 
@@ -89,7 +79,7 @@ pub(super) fn highlight(hl: &SyntaxHighlighter, content: &str) -> HighlightedLin
     // subsets of outer ones — so painting in event order yields inner-wins
     // nesting (`**bold with `code`**`) without maintaining a style stack.
     let mut styles: Vec<Style> = vec![palette.base; content.len()];
-    let mut paint = |range: std::ops::Range<usize>, style: Style| {
+    let mut paint = |range: Range<usize>, style: Style| {
         let end = range.end.min(content.len());
         if let Some(slots) = styles.get_mut(range.start..end) {
             slots.fill(style);
@@ -101,8 +91,7 @@ pub(super) fn highlight(hl: &SyntaxHighlighter, content: &str) -> HighlightedLin
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
 
-    // syntect state for the fenced block currently being walked, if any.
-    let mut code_block: Option<syntect::easy::HighlightLines> = None;
+    let mut code_block: Option<OpenCodeBlock> = None;
 
     for (event, range) in Parser::new_ext(content, options).into_offset_iter() {
         match event {
@@ -112,38 +101,49 @@ pub(super) fn highlight(hl: &SyntaxHighlighter, content: &str) -> HighlightedLin
             Event::Start(Tag::Strikethrough) => paint(range, palette.strike),
             Event::Start(Tag::BlockQuote(_)) => paint(range, palette.quote),
             Event::Start(Tag::Link { .. }) => paint(range, palette.link),
-            // The grammar scoped the whole item as `markup.list`, not just the
-            // bullet; nested inline events repaint their own ranges.
+            // The whole item is styled as a list, not just the bullet; nested
+            // inline events repaint their own ranges.
             Event::Start(Tag::Item) => paint(range, palette.list),
             Event::TaskListMarker(_) => paint(range, palette.list),
             Event::Code(_) => paint(range, palette.code),
             Event::Start(Tag::CodeBlock(kind)) => {
-                // The ``` fence itself stays at the theme default, matching the
-                // grammar. The block's contents are painted from `Event::Text`.
+                // The ``` fence itself stays at the base colour. The block's
+                // contents are collected from `Event::Text` and highlighted
+                // in one parse when the block closes, because tree-sitter
+                // needs the whole block, not a line of it.
                 let token = match &kind {
                     CodeBlockKind::Fenced(lang) => lang.split_whitespace().next().unwrap_or(""),
                     CodeBlockKind::Indented => "",
                 };
-                code_block = (!token.is_empty())
-                    .then(|| hl.syntax_set.find_syntax_by_token(token))
-                    .flatten()
-                    .map(|syntax| syntect::easy::HighlightLines::new(syntax, &hl.theme));
+                code_block = languages::config_for_token(token)
+                    .map(|config| OpenCodeBlock { config, span: None });
             }
-            Event::End(TagEnd::CodeBlock) => code_block = None,
-            Event::Text(text) => {
+            Event::Text(_) => {
                 // Only fenced-block text needs painting; prose inherits the
                 // style its enclosing tag already applied.
-                let Some(block) = code_block.as_mut() else {
+                if let Some(block) = code_block.as_mut() {
+                    block.span = Some(match &block.span {
+                        Some(span) => span.start..range.end,
+                        None => range,
+                    });
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                let Some(OpenCodeBlock {
+                    config,
+                    span: Some(span),
+                }) = code_block.take()
+                else {
                     continue;
                 };
-                let Ok(runs) = block.highlight_line(&text, &hl.syntax_set) else {
+                let Some(source) = content.get(span.clone()) else {
                     continue;
                 };
-                let mut at = range.start;
-                for (style, piece) in runs {
-                    let style = SyntaxHighlighter::syntect_to_ratatui_style(style);
-                    paint(at..at + piece.len(), style);
-                    at += piece.len();
+                let Some(runs) = hl.highlight_ranges(config, source) else {
+                    continue;
+                };
+                for (run, style) in runs {
+                    paint(span.start + run.start..span.start + run.end, style);
                 }
             }
             _ => {}
@@ -256,7 +256,7 @@ mod tests {
     }
 
     /// The regression this module exists for: a line packed with inline code
-    /// spans used to drive syntect's grammar into exponential backtracking.
+    /// spans used to drive the Markdown grammar into exponential backtracking.
     /// Every span must still resolve to the code colour.
     #[test]
     fn should_style_many_inline_code_spans_on_one_line() {
@@ -299,17 +299,17 @@ mod tests {
         }
     }
 
-    /// Fenced blocks delegate to syntect, which is the point of keeping it:
-    /// the language is known and its grammars are good at code.
+    /// Fenced blocks delegate to a real grammar, which is the point of the
+    /// split: the language is known, so tree-sitter can do its job.
     #[test]
-    fn should_delegate_fenced_code_blocks_to_syntect() {
+    fn should_delegate_fenced_code_blocks_to_tree_sitter() {
         let hl = highlighter();
         let out = highlight(&hl, "text\n```rust\nfn main() { let x = 1; }\n```\ntext");
         let code = out[2].as_ref().expect("code line highlighted");
 
         let keyword = code
             .iter()
-            .find(|(_, t)| t == "fn")
+            .find(|(_, t)| t.contains("fn"))
             .expect("`fn` is its own run");
         let plain = code
             .iter()
@@ -317,22 +317,23 @@ mod tests {
             .expect("punctuation run");
         assert_ne!(
             keyword.0.fg, plain.0.fg,
-            "syntect should colour the rust keyword"
+            "the rust keyword should be coloured"
         );
     }
 
-    /// Multi-line constructs need document-wide state: a fenced block's second
+    /// Multi-line constructs need whole-block state: a fenced block's second
     /// line is only code because the fence opened on an earlier line.
     #[test]
     fn should_carry_state_across_lines_in_fenced_blocks() {
         let hl = highlighter();
         let body = "```rust\nlet a = 1;\nlet b = 2;\n```";
         let out = highlight(&hl, body);
+        let plain = highlight(&hl, "plain")[0].as_ref().unwrap()[0].0.fg;
 
         for idx in [1usize, 2] {
             let runs = out[idx].as_ref().expect("code line highlighted");
             assert!(
-                runs.iter().any(|(_, t)| t == "let"),
+                runs.iter().any(|(s, _)| s.fg != plain),
                 "line {idx} should be tokenised as rust: {runs:?}"
             );
         }
@@ -348,6 +349,7 @@ mod tests {
         assert_eq!(line_text(&out[0]), "日本語 `コード` です");
         assert_eq!(line_text(&out[1]), "🎉 emoji `x` 🎉");
     }
+
     #[test]
     fn should_handle_empty_body() {
         let hl = highlighter();

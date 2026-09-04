@@ -14,7 +14,7 @@ use crate::model::{
     DiffLine, FileStatus, LineOrigin, LineRange, LineSide, ReviewSession, SessionDiffSource,
     add_comment_to_session,
 };
-use crate::syntax::{HunkHighlight, HunkStates};
+use crate::syntax::HunkHighlight;
 use crate::theme::Theme;
 use crate::vcs::git::calculate_gap;
 use crate::vcs::traits::VcsType;
@@ -786,8 +786,6 @@ pub struct App {
     pub expanded_bottom: HashMap<GapId, Vec<DiffLine>>,
     /// Cached file line counts (keyed by file_idx) to avoid repeated disk reads
     pub file_line_count_cache: HashMap<usize, u32>,
-    /// Parser states of hunks partway through lazy syntax highlighting.
-    pub(crate) highlight_states: HunkStates,
     /// Set by the diff view when it ran out of highlighting budget before
     /// every visible row had its spans; the event loop redraws to continue.
     pub highlight_pending: bool,

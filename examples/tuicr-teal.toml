@@ -17,8 +17,26 @@ expanded_context_fg = "#617c99"
 
 syntax_add_bg = "#123f3d"
 syntax_del_bg = "#4a2434"
-# Optional syntax theme, resolved relative to this file.
-syntax_theme = "tuicr-teal-syntax.tmTheme"
+
+# Optional syntax colors. Every key below may be omitted; an unset role keeps
+# the colour from the built-in palette that suits `panel_bg`.
+syntax_text = "#ddfff4"
+syntax_comment = "#6a9a8b"
+syntax_keyword = "#2dd4bf"
+syntax_string = "#a3e635"
+syntax_number = "#f2c36b"
+syntax_constant = "#f2c36b"
+syntax_function = "#7dd3fc"
+syntax_type = "#7dd3fc"
+syntax_variable = "#a6d9ca"
+syntax_property = "#a6d9ca"
+syntax_operator = "#4ee3ff"
+syntax_punctuation = "#9eb8d4"
+syntax_attribute = "#f2c36b"
+syntax_tag = "#2dd4bf"
+syntax_namespace = "#7dd3fc"
+syntax_escape = "#4ee3ff"
+syntax_error = "#ff6b8a"
 
 file_added = "#39d0b3"
 file_modified = "#f2c36b"
