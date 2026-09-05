@@ -3,7 +3,6 @@
 //! With `-z`, path bytes are emitted verbatim and NUL-delimited; `core.quotepath`
 //! and every ambiguity in `diff --git` display headers are therefore irrelevant.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::error::{Result, TuicrError};
@@ -221,6 +220,7 @@ fn pairing_error(detail: impl Into<String>) -> TuicrError {
 
 #[cfg(unix)]
 pub(crate) fn path_buf_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     PathBuf::from(OsString::from_vec(bytes.to_vec()))
 }

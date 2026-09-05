@@ -223,7 +223,7 @@ fn config_dir_from_parts(
         let base = _appdata
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| anyhow!("Could not determine APPDATA for config directory"))?;
-        return Ok(base.join("tuicr"));
+        Ok(base.join("tuicr"))
     }
 
     #[cfg(not(windows))]
