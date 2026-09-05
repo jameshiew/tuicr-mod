@@ -30,3 +30,4 @@ unused = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/tree-sitter-grammars/tree-sitter-scss"]
